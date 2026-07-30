@@ -1,20 +1,21 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["./.opencode/plugins/project-context.ts"],
-  "contextOptimizer": {
-    "enabled": true,
-    "maxProjectMemoryTokens": 1500,
-    "maxSessionHandoffTokens": 1000,
-    "maxToolResultLines": 100,
-    "maxDiffLines": 120,
-    "maxSearchMatches": 40,
-    "maxArtifactPreviewLines": 80,
-    "deduplicateReadResults": true,
-    "storeFullArtifacts": true,
-    "persistentDedupCache": true,
-    "maxDedupCacheEntries": 500,
-    "maxTestHistoryEntries": 50,
-    "regressionTrackHead": true,
-    "regressionSafeRevertOnly": true
-  }
+  "plugin": [
+    ["./.opencode/plugins/project-context.ts", {
+      "enabled": true,
+      "maxProjectMemoryTokens": 1500,
+      "maxSessionHandoffTokens": 1000,
+      "maxToolResultLines": 100,
+      "maxDiffLines": 120,
+      "maxSearchMatches": 40,
+      "maxArtifactPreviewLines": 80,
+      "deduplicateReadResults": true,
+      "storeFullArtifacts": true,
+      "persistentDedupCache": true,
+      "maxDedupCacheEntries": 500,
+      "maxTestHistoryEntries": 50,
+      "regressionTrackHead": true,
+      "regressionSafeRevertOnly": true
+    }]
+  ]
 }

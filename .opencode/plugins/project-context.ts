@@ -1279,18 +1279,13 @@ function memoryTestHistory(): string {
 // Plugin
 // ---------------------------------------------------------------------------
 
-export const ProjectContextPlugin: Plugin = async ({ project, client, $, directory, worktree }) => {
+export const ProjectContextPlugin: Plugin = async ({ project, client, $, directory, worktree }, options) => {
   initMemoryLayout(worktree || directory || process.cwd())
 
-  return {
-    // ----------------------------------------------------------------- config
-    config: (liveConfig: any) => {
-      const user = (liveConfig as any)?.contextOptimizer
-      if (user && typeof user === "object") {
-        cfg = { ...DEFAULT_CONFIG, ...user }
-      }
-    },
+  const userConfig = (options ?? {}) as Partial<Config>
+  cfg = { ...DEFAULT_CONFIG, ...userConfig }
 
+  return {
     // ------------------------------------------------------ session lifecycle
     event: async ({ event }: { event: any }) => {
       await failOpenAsync(async () => {
