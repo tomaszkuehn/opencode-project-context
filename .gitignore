@@ -1,0 +1,6 @@
+.opencode/memory/active-session.json
+.opencode/memory/session-history/
+.opencode/memory/artifacts/
+.opencode/memory/cache/
+.opencode/memory/index/
+.opencode/memory/plugin-errors.log
