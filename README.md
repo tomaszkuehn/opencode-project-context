@@ -340,6 +340,22 @@ Wyświetla zawartość `project-facts.auto.md` — pliku regenerowanego automaty
 
 Ręcznie uruchamia regenerację `project-facts.auto.md`. Przydatne po zmianie stacku, dodaniu manifestu (np. `Cargo.toml`, `pyproject.toml`) lub instalacji nowego narzędzia, bez czekania na `session.idle`.
 
+#### `/memory init [--force]`
+
+Inicjalizuje `project-facts.md` wstępnie wypełnionym szablonem z auto-wykrytymi podpowiedziami:
+
+- **Architektura** — wykryty stack (`package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `CMakeLists.txt`, `pom.xml`, `build.gradle`) i główne katalogi
+- **Komendy** — wykryte komendy build/test/format/lint z manifestów (npm scripts, Makefile, CMake, Cargo, Go, dotnet)
+- **Środowisko** — wykryte wersje runtime (`.nvmrc`, `.python-version`, `.ruby-version`, `.tool-versions`, `mise.toml`, `Dockerfile FROM`)
+- **Konwencje** i **Ryzyka** — pozostawione puste z markerem `(uzupełnij)` do ręcznego wypełnienia
+
+Idempotentny: nie nadpisuje nietrywialnego `project-facts.md`. Nadpisuje tylko gdy plik nie istnieje lub jest domyślnym szablonem z `install.sh` (zawiera `# Architektura` + `(uzupełnij` w pierwszych liniach). `--force` nadpisuje zawsze (z backupem `.tpl.bak` dla domyślnego szablonu).
+
+```
+/memory init              # wypełnij szablon podpowiedziami (jeśli brak/domyślny)
+/memory init --force      # nadpisz istniejący project-facts.md
+```
+
 #### `/memory test-history`
 
 Wyświetla historię uruchomień testów/buildów (najnowsze na górze, domyślnie 15 pozycji). Dla każdego wpisu pokazuje: timestamp, status (OK/FAIL), komendę, podsumowanie i listę failed testów. Służy do śledzenia, kiedy dany test zaczął padać lub kiedy build się zepsuł, bez ponownego analizowania logów. Maksymalnie `maxTestHistoryEntries` (domyślnie 50) ostatnich uruchomień.
@@ -481,6 +497,7 @@ Przywraca pliki do wersji z last-good (`git checkout <last-good-sha> -- <file>`)
 /memory commit            # dopisz propozycje do project-facts.md
 /memory auto              # pokaż auto-wygenerowane fakty (.auto.md)
 /memory auto-refresh     # ręcznie zregeneruj .auto.md
+/memory init             # wypełnij project-facts.md podpowiedziami z repo
 /memory test-history      # historia uruchomień testów/buildów
 /regression last-good     # kiedy testy przeszły ostatnio?
 /regression suspect       # które pliki/commity spowodowały regresję?

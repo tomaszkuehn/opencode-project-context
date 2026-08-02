@@ -1534,6 +1534,123 @@ function memoryAutoShow(): string {
   return auto
 }
 
+// --- /memory init ------------------------------------------------------------
+// Wykrywa dane z repo (ekstraktory auto-fakts) i wstępnie wypełnia project-facts.md
+// podpowiedziami. Idempotentny: nie nadpisuje nietrywialnego pliku; --force nadpisuje.
+
+function isDefaultFactsTemplate(text: string): boolean {
+  if (!text) return true
+  const head = text.split("\n").slice(0, 6).join("\n")
+  return /# Architektura/.test(head) && /\(uzupełnij/.test(head)
+}
+
+function buildInitFactsTemplate(force: boolean): { wrote: boolean; path: string; body: string; skipped: string } {
+  const root = worktreePath || projectRoot || process.cwd()
+  const cmds = extractBuildAndTestCommands(root)
+  const env = extractEnvironment(root)
+  const arch = extractArchitecture(root)
+  const out: string[] = []
+  out.push("# project-facts.md")
+  out.push("# Fakty ręczne o projekcie. Inicjalizowane przez /memory init.")
+  out.push("# Auto-wykryte wartości to podpowiedzi — edytuj swobodnie. Regenerowane auto-fakty: project-facts.auto.md")
+  out.push("")
+
+  // Architektura
+  out.push("# Architektura")
+  if (arch.stack.length) {
+    for (const s of arch.stack) out.push(`- ${s}`)
+  } else {
+    out.push("- (uzupełnij: stack, główne katalogi, warstwy)")
+  }
+  if (arch.dirs.length) {
+    out.push(`- Główne katalogi: ${arch.dirs.slice(0, 15).join(", ")}`)
+  } else {
+    out.push("- (uzupełnij: główne katalogi)")
+  }
+  out.push("")
+
+  // Konwencje (puste — do ręcznego wypełnienia)
+  out.push("# Konwencje")
+  out.push("- (uzupełnij: reguły kodowania, styl, nazewnictwo)")
+  out.push("- (uzupełnij: struktura modułów, warstwy)")
+  out.push("")
+
+  // Komendy
+  out.push("# Komendy")
+  const haveCmd = cmds.build.length || cmds.test.length || cmds.format.length || cmds.lint.length
+  if (cmds.build.length) {
+    out.push("- Build:")
+    for (const c of cmds.build) out.push(`  - ${c}`)
+  } else {
+    out.push("- Build: (uzupełnij)")
+  }
+  if (cmds.test.length) {
+    out.push("- Testy:")
+    for (const c of cmds.test) out.push(`  - ${c}`)
+  } else {
+    out.push("- Testy: (uzupełnij)")
+  }
+  if (cmds.format.length) {
+    out.push("- Formatowanie:")
+    for (const c of cmds.format) out.push(`  - ${c}`)
+  }
+  if (cmds.lint.length) {
+    out.push("- Lint:")
+    for (const c of cmds.lint) out.push(`  - ${c}`)
+  }
+  if (!haveCmd) out.push("- (brak wykrytych manifestów — uzupełnij ręcznie)")
+  out.push("")
+
+  // Środowisko
+  if (env.length) {
+    out.push("# Środowisko")
+    for (const e of env) out.push(`- ${e}`)
+    out.push("")
+  } else {
+    out.push("# Środowisko")
+    out.push("- (uzupełnij: wersje runtime, kontener, zależności systemowe)")
+    out.push("")
+  }
+
+  // Ryzyka (puste — do ręcznego wypełnienia)
+  out.push("# Ryzyka i znane problemy")
+  out.push("- (uzupełnij)")
+
+  const body = out.join("\n") + "\n"
+  const path = factsPath()
+  const existing = readText(path)
+
+  // Idempotencja: nie nadpisuj, chyba że force lub domyślny szablon
+  if (existing && !force && !isDefaultFactsTemplate(existing)) {
+    return { wrote: false, path, body, skipped: "istniejący project-facts.md nietrywialny — użyj /memory init --force, aby nadpisać" }
+  }
+  if (existing && !force && isDefaultFactsTemplate(existing)) {
+    // backup domyślnego szablonu
+    try { writeFileSync(path + ".tpl.bak", existing, "utf8") } catch { /* ignore */ }
+  }
+  writeFileSync(path, body, "utf8")
+  return { wrote: true, path, body, skipped: "" }
+}
+
+function memoryInit(args: string): string {
+  const force = /\b--force\b/.test(args)
+  const res = buildInitFactsTemplate(force)
+  const lines: string[] = []
+  if (res.wrote) {
+    lines.push(`Zapisano: ${res.path}`)
+    lines.push("")
+    lines.push(res.body)
+    lines.push("---")
+    lines.push("Wykryte podpowiedzi wstawione do sekcji: Architektura, Komendy, Środowisko.")
+    lines.push("Sekcje Konwencje i Ryzyka pozostawiono puste — uzupełnij ręcznie.")
+    lines.push("Auto-fakty (.auto.md) są regenerowane oddzielnie na session.idle lub /memory auto-refresh.")
+  } else {
+    lines.push(`NIE zapisano: ${res.skipped}`)
+    lines.push("Aby zobaczyć proponowany szablon bez zapisu, edytuj ręcznie lub użyj /memory init --force.")
+  }
+  return lines.join("\n")
+}
+
 function memoryTestHistory(): string {
   if (!testHistory.length) return "Brak zarejestrowanych uruchomień testów/buildów."
   const rows = testHistory.slice(-15).reverse().map((t) => {
@@ -1715,6 +1832,7 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
         else if (cmd.startsWith("/memory commit")) output.result = commitProposedFacts()
         else if (cmd.startsWith("/memory auto-refresh")) output.result = memoryAutoRefresh()
         else if (cmd.startsWith("/memory auto")) output.result = memoryAutoShow()
+        else if (cmd.startsWith("/memory init")) output.result = memoryInit(cmd.replace(/^\/memory init\s*/, ""))
         else if (cmd.startsWith("/memory test-history")) output.result = memoryTestHistory()
         else if (cmd.startsWith("/context budget")) output.result = contextBudget()
         else if (cmd.startsWith("/context artifacts")) output.result = contextArtifacts()
