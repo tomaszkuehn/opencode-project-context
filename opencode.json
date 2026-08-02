@@ -23,6 +23,9 @@
       "maxContextTokens": 0,
       "compactThreshold": 80,
       "compactReservedTokens": 10000
+    }],
+    ["./.opencode/plugins/memory-tui.tsx", {
+      "enabled": true
     }]
   ]
 }
