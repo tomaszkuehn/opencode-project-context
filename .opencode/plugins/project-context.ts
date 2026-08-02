@@ -96,8 +96,11 @@ type Metrics = {
   toolCalls: number
   rawChars: number
   deliveredChars: number
-  estimatedReductionPercent: number
   deduplicatedReads: number
+  dedupSavedChars: number
+  estimatedReductionPercent: number
+  estimatedSavedChars: number
+  estimatedSavedTokens: number
   artifactsCreated: number
   artifactBytes: number
 }
@@ -165,8 +168,11 @@ let metrics: Metrics = {
   toolCalls: 0,
   rawChars: 0,
   deliveredChars: 0,
-  estimatedReductionPercent: 0,
   deduplicatedReads: 0,
+  dedupSavedChars: 0,
+  estimatedReductionPercent: 0,
+  estimatedSavedChars: 0,
+  estimatedSavedTokens: 0,
   artifactsCreated: 0,
   artifactBytes: 0,
 }
@@ -1323,6 +1329,7 @@ function dedupeRead(filePath: string, content: string, lineStart?: number, lineE
   const existing = seen.find((s) => s.filePath === filePath && s.contentHash === h && `${s.filePath}:${s.lineStart ?? 0}-${s.lineEnd ?? "end"}` === rangeKey)
   if (existing) {
     metrics.deduplicatedReads += 1
+    metrics.dedupSavedChars += content.length
     return `Already delivered in this session (hash: ${h.slice(0, 8)}, source: ${existing.source}, at ${existing.deliveredAt}). Use read_artifact or read again explicitly if needed.`
   }
   seen.push({ filePath, contentHash: h, lineStart, lineEnd, deliveredAt: new Date().toISOString(), source: "read" })
@@ -1419,6 +1426,8 @@ function flushMetrics() {
   metrics.estimatedReductionPercent = metrics.rawChars > 0
     ? +(((metrics.rawChars - metrics.deliveredChars) / metrics.rawChars) * 100).toFixed(1)
     : 0
+  metrics.estimatedSavedChars = Math.max(0, metrics.rawChars - metrics.deliveredChars) + metrics.dedupSavedChars
+  metrics.estimatedSavedTokens = Math.round(metrics.estimatedSavedChars / 4)
   writeJson(metricsPath(), metrics)
   // Addition 1: persist dedup cache to disk
   failOpen(() => saveDedupCache(), "saveDedupCache")
@@ -1451,6 +1460,7 @@ function memoryStatus(): string {
     `Artifacts: ${artifacts} (${(artifactBytes / 1024).toFixed(1)} KB)`,
     `Test history: ${testHistory.length} uruchomień`,
     `Metrics: ${metrics.toolCalls} tool calls, ${metrics.estimatedReductionPercent}% reduction, ${metrics.deduplicatedReads} dedup reads`,
+    `Saved: ~${metrics.estimatedSavedTokens.toLocaleString()} tokens (${metrics.estimatedSavedChars.toLocaleString()} chars) — filtracja + deduplikacja`,
     `Context: ${lastContextTokens.toLocaleString()} / ${effectiveContextLimit().toLocaleString()} tokens (mode=${cfg.compactMode})`,
   ].join("\n")
 }
@@ -1482,7 +1492,7 @@ function memoryShow(): string {
 
 function memoryClearSession(): string {
   seen = []
-  metrics = { ...metrics, toolCalls: 0, rawChars: 0, deliveredChars: 0, deduplicatedReads: 0 }
+  metrics = { ...metrics, toolCalls: 0, rawChars: 0, deliveredChars: 0, deduplicatedReads: 0, dedupSavedChars: 0, estimatedSavedChars: 0, estimatedSavedTokens: 0 }
   testHistory = []
   sessionTrace = { sessionId: lastSessionId, buildTestCommands: {}, editedFiles: {}, blockers: [], startedAt: new Date().toISOString() }
   try {
