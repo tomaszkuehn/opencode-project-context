@@ -15,7 +15,10 @@
       "maxDedupCacheEntries": 500,
       "maxTestHistoryEntries": 50,
       "regressionTrackHead": true,
-      "regressionSafeRevertOnly": true
+      "regressionSafeRevertOnly": true,
+      "autoExtractFacts": true,
+      "autoExtractOnEvents": ["session.idle", "session.compacted"],
+      "factsAutoGlobDepth": 3
     }]
   ]
 }

@@ -26,6 +26,10 @@ type Config = {
   // Regression detection
   regressionTrackHead: boolean
   regressionSafeRevertOnly: boolean
+  // Auto-extracted facts
+  autoExtractFacts: boolean
+  autoExtractOnEvents: string[]   // e.g. ["session.idle","session.compacted"]
+  factsAutoGlobDepth: number
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -44,6 +48,10 @@ const DEFAULT_CONFIG: Config = {
   maxTestHistoryEntries: 50,
   regressionTrackHead: true,
   regressionSafeRevertOnly: true,
+  // Auto-extracted facts
+  autoExtractFacts: true,
+  autoExtractOnEvents: ["session.idle", "session.compacted"],
+  factsAutoGlobDepth: 3,
 }
 
 type SeenContext = {
@@ -303,6 +311,254 @@ function factsPath(): string {
   return join(memoryDir, "project-facts.md")
 }
 
+// --- Auto-extracted facts -----------------------------------------------------
+// Deterministyczne ekstraktory czytają repozytorium i budują project-facts.auto.md.
+// Plik .auto.md jest regenerowany; project-facts.md pozostaje dla faktów ręcznych.
+
+function factsAutoPath(): string {
+  return join(memoryDir, "project-facts.auto.md")
+}
+
+const IGNORED_DIRS = new Set([
+  "node_modules", ".git", ".ijfw", ".opencode", "dist", "build", "out",
+  ".next", ".nuxt", ".cache", ".turbo", "target", "bin", "obj",
+  "__pycache__", ".venv", "venv", "vendor", ".idea", ".vscode",
+])
+
+function listTopDirs(root: string, depth: number): string[] {
+  const out: string[] = []
+  const walk = (dir: string, d: number) => {
+    if (d > depth) return
+    let entries: string[] = []
+    try { entries = readdirSync(dir) } catch { return }
+    for (const e of entries) {
+      const full = join(dir, e)
+      let st
+      try { st = statSync(full) } catch { continue }
+      if (!st.isDirectory()) continue
+      if (IGNORED_DIRS.has(e)) continue
+      const rel = relative(root, full).replace(/\\/g, "/")
+      out.push(rel)
+      walk(full, d + 1)
+    }
+  }
+  walk(root, 1)
+  return out.sort()
+}
+
+function readJsonManifest(root: string, file: string): any | null {
+  const p = join(root, file)
+  if (!existsSync(p)) return null
+  try { return JSON.parse(readFileSync(p, "utf8")) } catch { return null }
+}
+
+function extractBuildAndTestCommands(root: string): { build: string[]; test: string[]; format: string[]; lint: string[] } {
+  const build: string[] = []
+  const test: string[] = []
+  const format: string[] = []
+  const lint: string[] = []
+  // package.json (npm/bun/yarn/pnpm)
+  const pkg = readJsonManifest(root, "package.json")
+  if (pkg && pkg.scripts) {
+    const s = pkg.scripts as Record<string, string>
+    const push = (arr: string[], k: string, label: string) => {
+      if (s[k]) arr.push(`npm run ${k}  (package.json: ${s[k]})`)
+    }
+    for (const k of ["build", "build:debug", "compile", "tsc"]) push(build, k, "build")
+    for (const k of ["test", "test:unit", "test:ci", "vitest", "jest"]) push(test, k, "test")
+    for (const k of ["format", "prettier", "lint:fix"]) push(format, k, "format")
+    for (const k of ["lint", "eslint", "biome", "tsc --noEmit"]) push(lint, k, "lint")
+    // packageManager hint
+    if (pkg.packageManager) build.push(`# packageManager: ${pkg.packageManager}`)
+  }
+  // pyproject.toml / setup.py
+  const pyproject = join(root, "pyproject.toml")
+  if (existsSync(pyproject)) {
+    const raw = readText(pyproject)
+    if (/\[tool\.pytest\]/.test(raw) || /pytest/.test(raw)) test.push("pytest  (pyproject.toml)")
+    if (/\[tool\.black\]/.test(raw) || /\[tool\.ruff\]/.test(raw)) {
+      if (/\[tool\.ruff\]/.test(raw)) { format.push("ruff format  (pyproject.toml)"); lint.push("ruff check  (pyproject.toml)") }
+      if (/\[tool\.black\]/.test(raw)) format.push("black  (pyproject.toml)")
+    }
+    if (/\[tool\.mypy\]/.test(raw)) lint.push("mypy  (pyproject.toml)")
+    if (/\[project\.scripts\]/.test(raw) || /\[tool\.poetry\]/.test(raw)) {
+      const m = raw.match(/build-system[\s\S]*?requires\s*=\s*\[([^\]]+)\]/)
+      if (m) build.push(`# build-backend: ${m[1].replace(/[\n"']/g, " ").trim()}`)
+    }
+  }
+  // Makefile
+  const makefile = join(root, "Makefile")
+  if (existsSync(makefile)) {
+    const raw = readText(makefile)
+    const targets = new Set<string>()
+    for (const line of raw.split("\n")) {
+      const m = line.match(/^([a-zA-Z0-9_\-]+):\s*/)
+      if (m) targets.add(m[1])
+    }
+    for (const t of ["build", "all", "compile", "debug"]) if (targets.has(t)) build.push(`make ${t}  (Makefile)`)
+    for (const t of ["test", "check", "test-unit"]) if (targets.has(t)) test.push(`make ${t}  (Makefile)`)
+    for (const t of ["lint", "format", "fmt"]) if (targets.has(t)) (t === "lint" ? lint : format).push(`make ${t}  (Makefile)`)
+  }
+  // CMake
+  const cmake = join(root, "CMakeLists.txt")
+  if (existsSync(cmake)) {
+    build.push("cmake --build build  (CMakeLists.txt)")
+    const raw = readText(cmake)
+    if (/enable_testing|add_test|gtest|Catch2|catch2/i.test(raw)) test.push("ctest --test-dir build  (CMakeLists.txt)")
+  }
+  // Cargo
+  const cargo = join(root, "Cargo.toml")
+  if (existsSync(cargo)) {
+    build.push("cargo build  (Cargo.toml)")
+    test.push("cargo test  (Cargo.toml)")
+    format.push("cargo fmt  (Cargo.toml)")
+    lint.push("cargo clippy  (Cargo.toml)")
+  }
+  // Go
+  if (existsSync(join(root, "go.mod"))) {
+    build.push("go build ./...  (go.mod)")
+    test.push("go test ./...  (go.mod)")
+    format.push("gofmt -w .  (go.mod)")
+  }
+  // dotnet: *.csproj/*.sln
+  try {
+    const hasCs = readdirSync(root).some((f) => /\.(csproj|sln|fsproj|vbproj)$/i.test(f))
+    if (hasCs) {
+      build.push("dotnet build  (*.csproj)")
+      test.push("dotnet test  (*.csproj)")
+      format.push("dotnet format  (*.csproj)")
+    }
+  } catch { /* ignore */ }
+  // Dedup preserving order
+  const uniq = (a: string[]) => Array.from(new Set(a))
+  return { build: uniq(build), test: uniq(test), format: uniq(format), lint: uniq(lint) }
+}
+
+function extractEnvironment(root: string): string[] {
+  const out: string[] = []
+  const readLine = (file: string): string | null => {
+    const p = join(root, file)
+    if (!existsSync(p)) return null
+    const raw = readText(p).split("\n")[0]?.trim()
+    return raw || null
+  }
+  const node = readLine(".nvmrc") ?? readLine(".node-version")
+  if (node) out.push(`Node: ${node}  (.nvmrc)`)
+  const py = readLine(".python-version")
+  if (py) out.push(`Python: ${py}  (.python-version)`)
+  const ruby = readLine(".ruby-version")
+  if (ruby) out.push(`Ruby: ${ruby}  (.ruby-version)`)
+  // mise / asdf / tool-versions
+  const tv = join(root, ".tool-versions")
+  if (existsSync(tv)) {
+    for (const l of readText(tv).split("\n")) {
+      const m = l.match(/^(\w+)\s+(\S+)/)
+      if (m) out.push(`${m[1]}: ${m[2]}  (.tool-versions)`)
+    }
+  }
+  const mise = join(root, "mise.toml")
+  if (existsSync(mise)) {
+    for (const l of readText(mise).split("\n")) {
+      const m = l.match(/^\s*(\w+)\s*=\s*["']?([^"'\s]+)["']?/)
+      if (m && !["env", "tasks"].includes(m[1])) out.push(`${m[1]}: ${m[2]}  (mise.toml)`)
+    }
+  }
+  // Dockerfile
+  if (existsSync(join(root, "Dockerfile"))) {
+    const raw = readText(join(root, "Dockerfile"))
+    const fm = raw.match(/FROM\s+([^\s]+)/i)
+    if (fm) out.push(`Container base: ${fm[1]}  (Dockerfile)`)
+  }
+  return out
+}
+
+function extractArchitecture(root: string): { stack: string[]; dirs: string[] } {
+  const stack: string[] = []
+  const dirs = listTopDirs(root, cfg.factsAutoGlobDepth)
+  // wykrywanie stacku po plikach manifestu i dominujących rozszerzeniach
+  const extCounts: Record<string, number> = {}
+  const walk = (dir: string, d: number) => {
+    if (d > cfg.factsAutoGlobDepth) return
+    let entries: string[] = []
+    try { entries = readdirSync(dir) } catch { return }
+    for (const e of entries) {
+      const full = join(dir, e)
+      let st
+      try { st = statSync(full) } catch { continue }
+      if (st.isDirectory()) {
+        if (IGNORED_DIRS.has(e)) continue
+        walk(full, d + 1)
+      } else {
+        const ext = e.includes(".") ? e.slice(e.lastIndexOf(".")) : ""
+        if (ext) extCounts[ext] = (extCounts[ext] ?? 0) + 1
+      }
+    }
+  }
+  walk(root, 1)
+  if (existsSync(join(root, "package.json"))) stack.push("TypeScript/JavaScript (Node)")
+  if (existsSync(join(root, "tsconfig.json"))) stack.push("TypeScript (tsc)")
+  if (existsSync(join(root, "Cargo.toml"))) stack.push("Rust (Cargo)")
+  if (existsSync(join(root, "go.mod"))) stack.push("Go")
+  if (existsSync(join(root, "pom.xml")) || existsSync(join(root, "build.gradle")) || existsSync(join(root, "build.gradle.kts"))) stack.push("Java/Kotlin (JVM)")
+  if (existsSync(join(root, "pyproject.toml")) || existsSync(join(root, "setup.py")) || existsSync(join(root, "requirements.txt"))) stack.push("Python")
+  if (existsSync(join(root, "CMakeLists.txt")) || existsSync(join(root, "Makefile"))) stack.push("C/C++ (native)")
+  // dominujące rozszerzenia jako hint
+  const top = Object.entries(extCounts).sort((a, b) => b[1] - a[1]).slice(0, 5)
+  for (const [ext, n] of top) {
+    if (n < 3) continue
+    if (ext === ".ts" || ext === ".tsx" || ext === ".js" || ext === ".jsx") continue
+    stack.push(`${ext} (${n} plików)`)
+  }
+  return { stack: Array.from(new Set(stack)), dirs }
+}
+
+function buildAutoFacts(): string {
+  const root = worktreePath || projectRoot || process.cwd()
+  const cmds = extractBuildAndTestCommands(root)
+  const env = extractEnvironment(root)
+  const arch = extractArchitecture(root)
+  const out: string[] = []
+  out.push("# project-facts.auto.md — generowane automatycznie przez plugin")
+  out.push("# Nie edytuj ręcznie; plik jest regenerowany na session.idle/compacted.")
+  out.push(`# Ostatnia aktualizacja: ${new Date().toISOString()}`)
+  out.push("")
+  if (arch.stack.length) {
+    out.push("## Architektura")
+    for (const s of arch.stack) out.push(`- ${s}`)
+    if (arch.dirs.length) out.push(`- Główne katalogi: ${arch.dirs.slice(0, 15).join(", ")}`)
+    out.push("")
+  }
+  if (cmds.build.length || cmds.test.length || cmds.format.length || cmds.lint.length) {
+    out.push("## Komendy")
+    for (const c of cmds.build) out.push(`- Build: ${c}`)
+    for (const c of cmds.test) out.push(`- Testy: ${c}`)
+    for (const c of cmds.format) out.push(`- Formatowanie: ${c}`)
+    for (const c of cmds.lint) out.push(`- Lint: ${c}`)
+    out.push("")
+  }
+  if (env.length) {
+    out.push("## Środowisko")
+    for (const e of env) out.push(`- ${e}`)
+    out.push("")
+  }
+  return out.join("\n")
+}
+
+function refreshAutoFacts(): void {
+  const body = buildAutoFacts()
+  writeFileSync(factsAutoPath(), body, "utf8")
+}
+
+function readAutoFacts(): string {
+  const raw = readText(factsAutoPath())
+  if (!raw) return ""
+  const tokens = estimateTokens(raw)
+  if (tokens > cfg.maxProjectMemoryTokens) {
+    return raw.slice(0, cfg.maxProjectMemoryTokens * 4) + "\n\n[WARN: project-facts.auto.md exceeds memory budget; truncated]"
+  }
+  return raw
+}
+
 function activeSessionPath(): string {
   return join(memoryDir, "active-session.json")
 }
@@ -535,15 +791,16 @@ function commitProposedFacts(): string {
 
 function readProjectFacts(): string {
   const raw = readText(factsPath())
-  if (!raw) return ""
-  const tokens = estimateTokens(raw)
+  const auto = cfg.autoExtractFacts ? readAutoFacts() : ""
+  const merged = [auto, raw].filter(Boolean).join("\n\n---\n\n")
+  if (!merged) return ""
+  const tokens = estimateTokens(merged)
   if (tokens > cfg.maxProjectMemoryTokens) {
-    // truncate by approx char count
     const maxChars = cfg.maxProjectMemoryTokens * 4
-    const truncated = raw.slice(0, maxChars)
-    return truncated + "\n\n[WARN: project-facts.md exceeds memory budget; truncated]"
+    const truncated = merged.slice(0, maxChars)
+    return truncated + "\n\n[WARN: project-facts exceeds memory budget; truncated]"
   }
-  return raw
+  return merged
 }
 
 // ---------------------------------------------------------------------------
@@ -1265,6 +1522,18 @@ function memoryPropose(): string {
   return proposed + "\n\n---\nAby dopisać te propozycje do project-facts.md, uruchom:  /memory commit"
 }
 
+function memoryAutoRefresh(): string {
+  refreshAutoFacts()
+  const auto = readAutoFacts()
+  return auto + `\n\n---\nZregenerowano ${factsAutoPath()}. Wstrzykiwane razem z project-facts.md.`
+}
+
+function memoryAutoShow(): string {
+  const auto = readAutoFacts()
+  if (!auto) return "Auto-fakty wyłączone lub puste. (autoExtractFacts=" + cfg.autoExtractFacts + ")"
+  return auto
+}
+
 function memoryTestHistory(): string {
   if (!testHistory.length) return "Brak zarejestrowanych uruchomień testów/buildów."
   const rows = testHistory.slice(-15).reverse().map((t) => {
@@ -1302,6 +1571,8 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
             blockers: [],
             startedAt: new Date().toISOString(),
           }
+          // Auto-extract facts at session start so context is fresh even on first run
+          if (cfg.autoExtractFacts) failOpen(() => refreshAutoFacts(), "refreshAutoFacts on session.created")
           const facts = readProjectFacts()
           const sess = readActiveSession()
           const git = await gitInfo($)
@@ -1321,6 +1592,10 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
           writeActiveSession(handoff)
           // Addition 2: fold per-session trace into persistent aggregated trace
           failOpen(() => mergeTraceIntoGlobal(), "mergeTraceIntoGlobal")
+          // Auto-extract deterministic facts (build/test/architecture/environment)
+          if (cfg.autoExtractFacts && cfg.autoExtractOnEvents.includes(type)) {
+            failOpen(() => refreshAutoFacts(), `refreshAutoFacts on ${type}`)
+          }
           flushMetrics()
         } else if (type === "session.deleted") {
           // optional: remove non-persistent session data
@@ -1438,6 +1713,8 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
         }
         else if (cmd.startsWith("/memory propose")) output.result = memoryPropose()
         else if (cmd.startsWith("/memory commit")) output.result = commitProposedFacts()
+        else if (cmd.startsWith("/memory auto-refresh")) output.result = memoryAutoRefresh()
+        else if (cmd.startsWith("/memory auto")) output.result = memoryAutoShow()
         else if (cmd.startsWith("/memory test-history")) output.result = memoryTestHistory()
         else if (cmd.startsWith("/context budget")) output.result = contextBudget()
         else if (cmd.startsWith("/context artifacts")) output.result = contextArtifacts()

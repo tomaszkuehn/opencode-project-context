@@ -97,7 +97,10 @@ if [[ ! -f "$OC" ]]; then
     "maxDedupCacheEntries": 500,
     "maxTestHistoryEntries": 50,
     "regressionTrackHead": true,
-    "regressionSafeRevertOnly": true
+    "regressionSafeRevertOnly": true,
+    "autoExtractFacts": true,
+    "autoExtractOnEvents": ["session.idle", "session.compacted"],
+    "factsAutoGlobDepth": 3
   }
 }
 JSON
@@ -124,6 +127,7 @@ GITIGNORE_ENTRIES=(
   '.opencode/memory/cache/'
   '.opencode/memory/index/'
   '.opencode/memory/plugin-errors.log'
+  '.opencode/memory/project-facts.auto.md'
 )
 
 touch "$GI"
@@ -148,7 +152,7 @@ cat <<EOF
   1. Uzupełnij:  $TARGET/.opencode/memory/project-facts.md
   2. Zrestartuj OpenCode (konfiguracja nie przeładowuje się na gorąco)
   3. W TUI wpisz:  /memory status   aby zweryfikować działanie
-  4. Komendy:     /memory status|show|save|clear-session|clear-project|compact
+  4. Komendy:     /memory status|show|save|clear-session|clear-project|compact|auto|auto-refresh
                  /context budget|artifacts
 
 EOF

@@ -238,6 +238,9 @@ Wszystkie pola sekcji `contextOptimizer` w `opencode.json` są opcjonalne — br
 | `maxTestHistoryEntries`    | `50`      | Maksymalna liczba zapamiętanych uruchomień testów |
 | `regressionTrackHead`      | `true`    | Zapisuj git SHA przy każdym uruchomieniu testów (korelacja regresji) |
 | `regressionSafeRevertOnly` | `true`    | Wymagaj `confirm` przy `git checkout <sha> -- <file>`; bez auto `--hard` |
+| `autoExtractFacts`         | `true`    | Włącz deterministyczne ekstraktory budujące `project-facts.auto.md` |
+| `autoExtractOnEvents`      | `["session.idle","session.compacted"]` | Zdarzenia, na których regenerowany jest `.auto.md`; pusta lista = tylko ręcznie (`/memory auto-refresh`) |
+| `factsAutoGlobDepth`       | `3`       | Głębokość skanowania katalogów dla sekcji Architektura |
 
 Zmiany konfiguracji wymagają restartu OpenCode.
 
@@ -328,6 +331,14 @@ Aby dopisać propozycje do faktów projektu:
 #### `/memory commit`
 
 Dopisuje wygenerowane wcześniej propozycje (z `/memory propose`) do `project-facts.md` pod markerem `<!-- === propozycje pluginu === -->`, czyści bufor propozycji i zachęca do ręcznego przejrzenia (aby utrzymać zwięzłość w budżecie tokenów).
+
+#### `/memory auto`
+
+Wyświetla zawartość `project-facts.auto.md` — pliku regenerowanego automatycznie przez deterministyczne ekstraktory (nie wymaga zatwierdzania).
+
+#### `/memory auto-refresh`
+
+Ręcznie uruchamia regenerację `project-facts.auto.md`. Przydatne po zmianie stacku, dodaniu manifestu (np. `Cargo.toml`, `pyproject.toml`) lub instalacji nowego narzędzia, bez czekania na `session.idle`.
 
 #### `/memory test-history`
 
@@ -468,6 +479,8 @@ Przywraca pliki do wersji z last-good (`git checkout <last-good-sha> -- <file>`)
 /memory compact           # odśwież handoff ręcznie
 /memory propose           # zobacz propozycje faktów z sesji
 /memory commit            # dopisz propozycje do project-facts.md
+/memory auto              # pokaż auto-wygenerowane fakty (.auto.md)
+/memory auto-refresh     # ręcznie zregeneruj .auto.md
 /memory test-history      # historia uruchomień testów/buildów
 /regression last-good     # kiedy testy przeszły ostatnio?
 /regression suspect       # które pliki/commity spowodowały regresję?
@@ -593,7 +606,7 @@ Plugin zawiera trzy rozszerzenia wykraczające poza podstawowe MVP, skoncentrowa
 - `/memory clear-session` czyści cache; `project-facts.md` i zagregowany trace pozostają
 - Wyłączalne przez `persistentDedupCache: false` (wtedy cache tylko w RAM, jak w podstawowym MVP)
 
-### 2. Auto-ekstrakcja faktów projektu (`/memory propose` + `/memory commit`)
+### 2. Auto-ekstrakcja faktów projektu (`/memory propose` + `/memory commit` + `project-facts.auto.md`)
 
 Plugin automatycznie zbiera statystyki w trakcie sesji i po jej zakończeniu (`session.idle`/`session.compacted`) agreguje je w `.opencode/memory/cache/session-trace.json` (utrwalane między sesjami):
 
@@ -601,7 +614,15 @@ Plugin automatycznie zbiera statystyki w trakcie sesji i po jej zakończeniu (`s
 - `editedFiles` — licznik edycji plików (z `file.edited`, ścieżki względne worktree)
 - `blockers` — powtarzające się nazwy failed testów/błędów między sesjami
 
-Komenda `/memory propose` generuje propozycje sekcji `# Komendy`, `# Hotspoty`, `# Ostatnie nieudane testy`, `# Ryzyka / powtarzające się blokery` i zapisuje je w `proposed-facts.md`. Komenda `/memory commit` dopisuje propozycje do `project-facts.md` pod markerem HTML. Brak autozapisu — użytkownik zatwierdza ręcznie, co zapobiega rozrostowi faktów ponad budżet tokenów.
+Komenda `/memory propose` generuje propozycje sekcji `# Komendy`, `# Hotspoty`, `# Ostatnie nieudane testy`, `# Ryzyka / powtarzające się blokery` i zapisuje je w `proposed-facts.md`. Komenda `/memory commit` dopisuje propozycje do `project-facts.md` pod markerem HTML. Te statystyki wymagają zatwierdzenia — użytkownik kontroluje rozrost `project-facts.md`.
+
+**Deterministyczne auto-fakty (`project-facts.auto.md`)** — obok statystyk sesji, plugin czyta repozytorium i buduje osobny plik `project-facts.auto.md`, regenerowany automatycznie na `session.idle`/`session.compacted` (konfigurowalne przez `autoExtractOnEvents`). Wstrzykiwany razem z `project-facts.md` w ramach budżetu `maxProjectMemoryTokens`. Ekstraktory wykrywają:
+
+- **Architekturę** — stack po manifestach (`package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `CMakeLists.txt`, `pom.xml`, `build.gradle`) i dominujących rozszerzeniach; główne katalogi (do `factsAutoGlobDepth`, domyślnie 3)
+- **Komendy** — `package.json` scripts, `Makefile` targets, CMake (`cmake --build`, `ctest`), Cargo, Go, dotnet; sekcje Build/Test/Formatowanie/Lint
+- **Środowisko** — `.nvmrc`, `.node-version`, `.python-version`, `.ruby-version`, `.tool-versions`, `mise.toml`, `Dockerfile` (FROM)
+
+Plik `.auto.md` jest dodawany do `.gitignore` (regenerowany, nie wersjonowany). `project-facts.md` pozostaje dla faktów ręcznych (ryzyka, konwencje zespołu) i jest wersjonowany. Wstrzykiwany kontekst to połączenie obu, ucięte do budżetu. Komendy `/memory auto` i `/memory auto-refresh` pozwalają podejrzeć i ręcznie odświeżyć auto-fakty. Konfiguracja: `autoExtractFacts: false` wyłącza funkcję; `autoExtractOnEvents: []` wyłącza auto-regenerację, zostawiając tylko `/memory auto-refresh`.
 
 ### 3. Pamięć stanu testów w czasie (`test-history.json`)
 
