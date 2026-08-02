@@ -1564,6 +1564,52 @@ function memoryStatus(): string {
   ].join("\n")
 }
 
+function fmtBytes(n: number): string {
+  if (n >= 1_048_576) return `${(n / 1_048_576).toFixed(1)}MB`
+  if (n >= 1024) return `${(n / 1024).toFixed(1)}KB`
+  return `${n}B`
+}
+
+function fmtTokensShort(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return `${n}`
+}
+
+function ageLabel(min: number): string {
+  if (min <= 0) return "now"
+  if (min < 60) return `${min}m`
+  if (min < 1440) return `${Math.floor(min / 60)}h ${min % 60}m`
+  return `${Math.floor(min / 1440)}d`
+}
+
+// Tekstowy odpowiednik widoku TUI — działa w trybie CLI (non-interactive)
+function memoryTuiDump(): string {
+  flushMetrics()
+  const m = metrics
+  const limit = m.contextLimit || effectiveContextLimit()
+  const ctxPct = limit > 0 ? Math.round((m.contextTokens / limit) * 100) : 0
+  const threshold = m.compactThresholdPct
+  const factsPct = m.factsMaxTokens > 0 ? Math.round((m.factsTokens / m.factsMaxTokens) * 100) : 0
+  const diskPct = m.diskLimitBytes > 0 ? Math.round((m.diskBytes / m.diskLimitBytes) * 100) : 0
+  const dirtyLabel = m.dirtyFiles > 0 ? ` (dirty:${m.dirtyFiles})` : ""
+  const lspLabel = m.lspErrorsCount > 0 ? ` · lsp:${m.lspErrorsCount}err` : ""
+  const lastGoodLabel = m.lastGoodHead ? ` · last-good:${m.lastGoodHead}` : ""
+  const revertsLabel = m.revertsCount > 0 ? ` · reverts:${m.revertsCount}` : ""
+  const dedupLabel = m.deduplicatedReads > 0 ? ` · dedup:${m.deduplicatedReads}` : ""
+  const artLabel = m.artifactsCreated > 0 ? ` · art:${m.artifactsCreated} (${fmtBytes(m.artifactsBytes)})` : ""
+
+  const warn = (cond: boolean) => cond ? " ⚠" : ""
+
+  return [
+    `memory: tools:${m.toolCalls} · saved:~${fmtTokensShort(m.estimatedSavedTokens)} tok · ${m.estimatedReductionPercent}% reduc.${dedupLabel}${artLabel}`,
+    `disk: ${fmtBytes(m.diskBytes)} / ${fmtBytes(m.diskLimitBytes)} (${diskPct}%) · art ${fmtBytes(m.artifactsBytes)} · cache ${fmtBytes(m.cacheBytes)}${warn(diskPct >= 90)}`,
+    `ctx: ${fmtTokensShort(m.contextTokens)}/${fmtTokensShort(limit)} tok (${ctxPct}%, compact@${threshold}%) · facts: ${fmtTokensShort(m.factsTokens)}/${fmtTokensShort(m.factsMaxTokens)} (${factsPct}%) [${m.compactMode}]${warn(ctxPct >= threshold)}`,
+    `handoff: ${ageLabel(m.handoffAgeMin)} · mod:${m.modifiedCount} · dec:${m.decisionsCount} · blk:${m.blockersCount} · HEAD:${m.headSha || "-"}${dirtyLabel}${lspLabel}${lastGoodLabel}${revertsLabel}`,
+    `dedup cache: ${m.dedupCacheCount}/${m.dedupCacheMax} · tests: ${m.testHistoryCount}/${m.testHistoryMax}`,
+  ].join("\n")
+}
+
 function memoryShow(): string {
   const facts = readProjectFacts()
   const sess = readActiveSession()
@@ -2135,6 +2181,7 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
         else if (cmd.startsWith("/memory compact-reset")) output.result = memoryCompactReset()
         else if (cmd.startsWith("/memory compact-now")) output.result = await memoryCompactNow(client)
         else if (cmd.startsWith("/memory test-history")) output.result = memoryTestHistory()
+        else if (cmd.startsWith("/memory tui")) output.result = memoryTuiDump()
         else if (cmd.startsWith("/context budget")) output.result = contextBudget()
         else if (cmd.startsWith("/context artifacts")) output.result = contextArtifacts()
         else if (cmd.startsWith("/regression last-good")) output.result = regressionLastGood()

@@ -408,6 +408,22 @@ Przykład wyjścia:
     Build complete
 ```
 
+#### `/memory tui`
+
+Tekstowy odpowiednik widoku TUI — działa w trybie CLI (non-interactive), gdzie sloty TUI nie są renderowane. Zwraca 5-linijkowy blok z tymi samymi danymi co pasek TUI: oszczędność tokenów, rozmiar na dysku vs limit 200 MB, budżet kontekstu vs próg kompaktacji, stan sesji (handoff, modified, decisions, blockers, HEAD, dirty, LSP, last-good), limity cache (dedup, test-history). Ostrzeżenia (`⚠`) markują przekroczenia: dysk ≥90%, kontekst ≥ próg kompaktacji.
+
+Przykład wyjścia:
+
+```
+memory: tools:18 · saved:~65k tok · 85% reduc. · dedup:2 · art:1 (3.0KB)
+disk: 349KB / 200.0MB (0%) · art 308KB · cache 34KB
+ctx: 12.0k/200.0k tok (6%, compact@80%) · facts: 480/1.5k (32%) [suggest]
+handoff: 12m · mod:3 · dec:0 · blk:0 · HEAD:abc12345 (dirty:2) · lsp:3err · last-good:abc12345
+dedup cache: 127/500 · tests: 14/50
+```
+
+W trybie TUI (interaktywnym) ten sam widok jest odświeżany na żywo co 3 s w pasku statusu pluginu `memory-tui.tsx`.
+
 ### `/context <subkomenda>`
 
 Komendy diagnostyki budżetu kontekstu i artefaktów.
@@ -539,6 +555,7 @@ Przywraca pliki do wersji z last-good (`git checkout <last-good-sha> -- <file>`)
 /memory compact-now      # wymuś kompaktację (lub instrukcja)
 /memory compact-reset    # zresetuj flagę sugestii
 /memory test-history      # historia uruchomień testów/buildów
+/memory tui              # tekstowy widok TUI (działa w CLI)
 /regression last-good     # kiedy testy przeszły ostatnio?
 /regression suspect       # które pliki/commity spowodowały regresję?
 /regression revert stash  # zstashuj zmiany (odwracalne)
