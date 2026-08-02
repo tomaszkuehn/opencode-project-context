@@ -2062,6 +2062,12 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
           if (cmd.startsWith("/memory ") || cmd.startsWith("/context ")) {
             // handled below via tui.command.execute; nothing here
           }
+          // CLI fallback: /memory tui działa też w trybie non-interactive
+          if (cmd.startsWith("/memory tui")) {
+            const out: { result?: string } = {}
+            await failOpenAsync(async () => { out.result = memoryTuiDump() }, "command.executed /memory tui")
+            if (out.result) console.log(out.result)
+          }
         } else if (type === "message.updated" || type === "message.completed") {
           await updateContextTokensFromMessage(event, client)
         }
