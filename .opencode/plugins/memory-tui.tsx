@@ -77,8 +77,8 @@ const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
       const sep = " · "
       const parts: string[] = []
       parts.push(`tools: ${calls}`)
-      if (saved > 0) parts.push(`saved: ~${fmtTokens(saved)} tok`)
-      if (reduction > 0) parts.push(`${reduction.toFixed(0)}% reduc.`)
+      parts.push(`saved: ~${fmtTokens(saved)} tok`)
+      parts.push(`${reduction.toFixed(0)}% reduc.`)
       if (dedup > 0) parts.push(`dedup: ${dedup}`)
       if (arts > 0) parts.push(`art: ${arts} (${fmtBytes(artBytes)})`)
 
