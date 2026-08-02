@@ -27,6 +27,7 @@ Plugin zbudowany według specyfikacji `PLUGIN.md`.
   - [2. Auto-ekstrakcja faktów projektu](#2-auto-ekstrakcja-faktów-projektu)
   - [3. Pamięć stanu testów w czasie](#3-pamięć-stanu-testów-w-czasie)
   - [4. Wykrywanie i cofanie regresji](#4-wykrywanie-i-cofanie-regresji-regression)
+  - [5. Detekcja rozmiaru kontekstu i kompaktacja](#5-detekcja-rozmiaru-kontekstu-i-kompaktacja-compactmode)
 - [Metryki i diagnostyka](#metryki-i-diagnostyka)
 - [Rozwiązywanie problemów](#rozwiązywanie-problemów)
 
@@ -241,6 +242,10 @@ Wszystkie pola sekcji `contextOptimizer` w `opencode.json` są opcjonalne — br
 | `autoExtractFacts`         | `true`    | Włącz deterministyczne ekstraktory budujące `project-facts.auto.md` |
 | `autoExtractOnEvents`      | `["session.idle","session.compacted"]` | Zdarzenia, na których regenerowany jest `.auto.md`; pusta lista = tylko ręcznie (`/memory auto-refresh`) |
 | `factsAutoGlobDepth`       | `3`       | Głębokość skanowania katalogów dla sekcji Architektura |
+| `compactMode`             | `"suggest"` | Tryb kompaktacji: `auto` (OpenCode kompaktuje sam), `suggest` (toast + status), `confirm` (toast + ręczne potwierdzenie), `off` |
+| `maxContextTokens`        | `0`       | Limit kontekstu dla progu kompaktacji; `0` = autodetekcja z `Model.limit.context` (fallback 200000) |
+| `compactThreshold`         | `80`      | Próg kompaktacji w procentach limitu (0-100) |
+| `compactReservedTokens`    | `10000`   | Bufor tokenów zostawiany przy kompaktacji (odzwierciedla `compaction.reserved`) |
 
 Zmiany konfiguracji wymagają restartu OpenCode.
 
@@ -355,6 +360,34 @@ Idempotentny: nie nadpisuje nietrywialnego `project-facts.md`. Nadpisuje tylko g
 /memory init              # wypełnij szablon podpowiedziami (jeśli brak/domyślny)
 /memory init --force      # nadpisz istniejący project-facts.md
 ```
+
+#### `/memory compact-status`
+
+Wyświetla stan detekcji rozmiaru kontekstu i progu kompaktacji: bieżący rozmiar (`AssistantMessage.tokens.input`), limit (ręczny/autodetekcja/fallback 200k), próg w procentach, wykorzystanie i pozostałe tokeny. Gdy próg przekroczony, podaje instrukcję zależną od `compactMode`.
+
+Plugin śledzi rozmiar kontekstu na każdej wiadomości asystenta (`message.updated`/`message.completed`). Limit określany wg priorytetu: `maxContextTokens` > autodetekcja z `Model.limit.context` (przez `client.config.providers()`) > fallback 200000. Autodetekcja uruchamiana raz na sesję przy pierwszej wiadomości asystenta dla danego modelu.
+
+```
+=== Context compaction ===
+Tryb:           suggest
+Rozmiar:        165 432 tokens
+Limit:          200 000 tokens (autodetekcja: anthropic/claude-sonnet-4-5)
+Próg kompaktacji: 160 000 tokens (80%)
+Wykorzystanie:  83%
+Pozostało:      34 568 tokens
+Sugestia pokazana: tak
+
+⚠ Próg przekroczony — sugerowana kompaktacja.
+Aby skompaktować: użyj natywnej komendy OpenCode (np. /compact w TUI) lub /memory compact-now.
+```
+
+#### `/memory compact-now`
+
+Próbuje wymusić kompaktację przez `tui.executeCommand` (komenda `/compact`). Jeśli OpenCode nie wspiera tej komendy przez API, wypisuje instrukcję ręczną. W trybie `auto` z `compaction.auto: true` (konfiguracja OpenCode) kompaktacja nastąpi automatycznie przy następnym `message`.
+
+#### `/memory compact-reset`
+
+Resetuje flagę sugestii (żeby toast mógł się pokazać ponownie przy kolejnym przekroczeniu). Nie wpływa na sam rozmiar kontekstu.
 
 #### `/memory test-history`
 
@@ -498,6 +531,9 @@ Przywraca pliki do wersji z last-good (`git checkout <last-good-sha> -- <file>`)
 /memory auto              # pokaż auto-wygenerowane fakty (.auto.md)
 /memory auto-refresh     # ręcznie zregeneruj .auto.md
 /memory init             # wypełnij project-facts.md podpowiedziami z repo
+/memory compact-status   # rozmiar kontekstu + próg kompaktacji
+/memory compact-now      # wymuś kompaktację (lub instrukcja)
+/memory compact-reset    # zresetuj flagę sugestii
 /memory test-history      # historia uruchomień testów/buildów
 /regression last-good     # kiedy testy przeszły ostatnio?
 /regression suspect       # które pliki/commity spowodowały regresję?
@@ -681,6 +717,21 @@ Pełny opis komend, przykłady wyjścia, tabela wariantów `revert` oraz typowy 
 - `stash` jest operacją odwracalną (`git stash pop`)
 - `checkout <sha> -- <file>` nadpisuje tylko wskazane pliki — cofnięcie przez `git checkout HEAD -- <file>` lub `git restore`
 - W trybie `regressionSafeRevertOnly: false` pojedynczy plik przywracany jest bez potwierdzenia — używać ostrożnie
+
+### 5. Detekcja rozmiaru kontekstu i kompaktacja (`compactMode`)
+
+Plugin śledzi rozmiar kontekstu sesji na podstawie `AssistantMessage.tokens.input` (pole `cost.tokens.input` z każdej wiadomości asystenta, aktualizowane na `message.updated`/`message.completed`). OpenCode ma natywną `compaction.auto`, ale plugin dodaje:
+
+- **Precyzyjny próg**: `compactThreshold`% limitu (domyślnie 80%). Limit określany wg priorytetu: `maxContextTokens` (ręczny) → autodetekcja z `Model.limit.context` przez `client.config.providers()` (raz na sesję, dla pierwszego modelu) → fallback 200000.
+- **Tryby** (`compactMode`):
+  - `auto` — plugin nie interweniuje; OpenCode kompaktuje przy `compaction.auto: true`
+  - `suggest` (domyślny) — toast + status w TUI gdy próg przekroczony; kompaktacja ręczna
+  - `confirm` — toast + `/memory compact-now` do potwierdzenia; `/memory compact-reset` do odłożenia
+  - `off` — detekcja wyłączona
+- **Wzbogacanie kontekstu po kompaktacji**: hook `experimental.session.compacting` wstrzykuje `project-facts` (auto + ręczne) i handoff sesji do kontekstu kompaktacji, żeby agent nie stracił istotnego kontekstu projektu.
+- **Reset po kompaktacji**: hook `experimental.compaction.autocontinue` resetuje `lastContextTokens` i flagę sugestii.
+
+Komendy: `/memory compact-status`, `/memory compact-now`, `/memory compact-reset`. Stan pokazywany też w `/memory status` i `/context budget`.
 
 ---
 

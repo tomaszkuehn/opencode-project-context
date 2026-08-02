@@ -1,5 +1,5 @@
 ---
-description: Manage project memory (status, show, save, clear-session, clear-project, compact, propose, commit, init, auto, auto-refresh, test-history)
+description: Manage project memory (status, show, save, clear-session, clear-project, compact, init, auto, auto-refresh, compact-status, compact-now, compact-reset, test-history)
 ---
 
 $ARGUMENTS

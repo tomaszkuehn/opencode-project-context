@@ -100,7 +100,11 @@ if [[ ! -f "$OC" ]]; then
     "regressionSafeRevertOnly": true,
     "autoExtractFacts": true,
     "autoExtractOnEvents": ["session.idle", "session.compacted"],
-    "factsAutoGlobDepth": 3
+    "factsAutoGlobDepth": 3,
+    "compactMode": "suggest",
+    "maxContextTokens": 0,
+    "compactThreshold": 80,
+    "compactReservedTokens": 10000
   }
 }
 JSON

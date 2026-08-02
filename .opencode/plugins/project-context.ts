@@ -30,6 +30,11 @@ type Config = {
   autoExtractFacts: boolean
   autoExtractOnEvents: string[]   // e.g. ["session.idle","session.compacted"]
   factsAutoGlobDepth: number
+  // Context compaction
+  compactMode: "auto" | "suggest" | "confirm" | "off"
+  maxContextTokens: number        // 0 = autodetect from Model.limit.context (fallback 200000)
+  compactThreshold: number        // percent (0-100) of limit; default 80
+  compactReservedTokens: number   // buffer left for compaction (mirrors compaction.reserved)
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -52,6 +57,11 @@ const DEFAULT_CONFIG: Config = {
   autoExtractFacts: true,
   autoExtractOnEvents: ["session.idle", "session.compacted"],
   factsAutoGlobDepth: 3,
+  // Context compaction
+  compactMode: "suggest",
+  maxContextTokens: 0,
+  compactThreshold: 80,
+  compactReservedTokens: 10000,
 }
 
 type SeenContext = {
@@ -172,6 +182,13 @@ let sessionTrace: SessionTrace = {
   blockers: [],
   startedAt: "",
 }
+
+// --- Context compaction state -------------------------------------------------
+let lastContextTokens: number = 0          // bieżący rozmiar kontekstu (AssistantMessage.tokens.input)
+let modelContextLimit: number = 0          // 0 = nie ustalono; autodetekcja z Model.limit.context
+let compactSuggestionShown: boolean = false // czy już pokazano sugestię dla obecnego przekroczenia
+let lastAssistantModel: string = ""        // "provider/model" do autodetekcji limitu
+let currentSessionId: string = ""           // bieżąca sesja (do client.session.messages)
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1434,6 +1451,7 @@ function memoryStatus(): string {
     `Artifacts: ${artifacts} (${(artifactBytes / 1024).toFixed(1)} KB)`,
     `Test history: ${testHistory.length} uruchomień`,
     `Metrics: ${metrics.toolCalls} tool calls, ${metrics.estimatedReductionPercent}% reduction, ${metrics.deduplicatedReads} dedup reads`,
+    `Context: ${lastContextTokens.toLocaleString()} / ${effectiveContextLimit().toLocaleString()} tokens (mode=${cfg.compactMode})`,
   ].join("\n")
 }
 
@@ -1491,6 +1509,8 @@ function contextBudget(): string {
   const facts = readProjectFacts()
   const sess = readActiveSession()
   const handoffTokens = sess ? estimateTokens(JSON.stringify(sess)) : 0
+  const limit = effectiveContextLimit()
+  const pct = limit > 0 ? Math.round((lastContextTokens / limit) * 100) : 0
   return [
     `Project facts:  ${estimateTokens(facts)} / ${cfg.maxProjectMemoryTokens} tokens`,
     `Handoff:        ${handoffTokens} / ${cfg.maxSessionHandoffTokens} tokens`,
@@ -1498,6 +1518,7 @@ function contextBudget(): string {
     `Diff limit:     ${cfg.maxDiffLines} lines`,
     `Search matches: ${cfg.maxSearchMatches}`,
     `Artifact preview: ${cfg.maxArtifactPreviewLines} lines`,
+    `Context size:   ${lastContextTokens.toLocaleString()} / ${limit.toLocaleString()} tokens (${pct}%, mode=${cfg.compactMode}, threshold=${cfg.compactThreshold}%)`,
   ].join("\n")
 }
 
@@ -1532,6 +1553,137 @@ function memoryAutoShow(): string {
   const auto = readAutoFacts()
   if (!auto) return "Auto-fakty wyłączone lub puste. (autoExtractFacts=" + cfg.autoExtractFacts + ")"
   return auto
+}
+
+// --- Context compaction -------------------------------------------------------
+// Detekcja rozmiaru kontekstu i sugestie kompaktacji. OpenCode ma natywną
+// compaction.auto, ale plugin może: (a) podać precyzyjny próg przez autodetekcję
+// limitu modelu, (b) sugerować kompaktację toastem, (c) wzbogacić kontekst
+// po kompaktacji przez experimental.session.compacting.
+
+const FALLBACK_CONTEXT_LIMIT = 200000
+
+function effectiveContextLimit(): number {
+  if (cfg.maxContextTokens > 0) return cfg.maxContextTokens
+  if (modelContextLimit > 0) return modelContextLimit
+  return FALLBACK_CONTEXT_LIMIT
+}
+
+function compactThresholdTokens(): number {
+  return Math.floor(effectiveContextLimit() * (cfg.compactThreshold / 100))
+}
+
+function compactStatusText(): string {
+  const limit = effectiveContextLimit()
+  const threshold = compactThresholdTokens()
+  const pct = limit > 0 ? Math.round((lastContextTokens / limit) * 100) : 0
+  const remaining = Math.max(0, limit - lastContextTokens)
+  const lines = [
+    "=== Context compaction ===",
+    `Tryb:           ${cfg.compactMode}`,
+    `Rozmiar:        ${lastContextTokens.toLocaleString()} tokens`,
+    `Limit:          ${limit.toLocaleString()} tokens${cfg.maxContextTokens > 0 ? " (ręczny)" : modelContextLimit > 0 ? ` (autodetekcja: ${lastAssistantModel || "?"})` : " (fallback 200k)"}`,
+    `Próg kompaktacji: ${threshold.toLocaleString()} tokens (${cfg.compactThreshold}%)`,
+    `Wykorzystanie:  ${pct}%`,
+    `Pozostało:      ${remaining.toLocaleString()} tokens`,
+    `Sugestia pokazana: ${compactSuggestionShown ? "tak" : "nie"}`,
+  ]
+  if (lastContextTokens >= threshold) {
+    lines.push("")
+    lines.push("⚠ Próg przekroczony — sugerowana kompaktacja.")
+    if (cfg.compactMode === "suggest") lines.push("Aby skompaktować: użyj natywnej komendy OpenCode (np. /compact w TUI) lub /memory compact-now.")
+    else if (cfg.compactMode === "confirm") lines.push("Aby skompaktować: /memory compact-now. Aby odłożyć: /memory compact-reset.")
+    else if (cfg.compactMode === "auto") lines.push("Tryb auto: OpenCode skompaktuje automatycznie (compaction.auto=true).")
+    else if (cfg.compactMode === "off") lines.push("Tryb off: kompaktacja wyłączona w pluginie.")
+  }
+  return lines.join("\n")
+}
+
+async function autodetectModelLimit(client: any, modelKey: string): Promise<number> {
+  if (!client || !modelKey) return 0
+  const [providerID, modelID] = modelKey.split("/")
+  if (!providerID || !modelID) return 0
+  try {
+    const res = await client?.config?.providers?.()
+    const body = res?.body ?? res
+    const providers = body?.providers ?? []
+    for (const p of providers) {
+      if (p.id !== providerID) continue
+      const m = p?.models?.[modelID]
+      const ctx = m?.limit?.context ?? m?.capabilities?.limit?.context
+      if (ctx && ctx > 0) return ctx
+    }
+  } catch {
+    // ignore — fallback
+  }
+  return 0
+}
+
+function maybeShowCompactSuggestion(client: any): void {
+  if (cfg.compactMode === "off") return
+  const limit = effectiveContextLimit()
+  const threshold = compactThresholdTokens()
+  if (lastContextTokens < threshold) {
+    compactSuggestionShown = false
+    return
+  }
+  if (compactSuggestionShown) return
+  compactSuggestionShown = true
+  const pct = limit > 0 ? Math.round((lastContextTokens / limit) * 100) : 0
+  const msg = `Kontekst ${lastContextTokens.toLocaleString()}/${limit.toLocaleString()} tokens (${pct}%) — powyżej progu ${cfg.compactThreshold}%.`
+  if (cfg.compactMode === "suggest" || cfg.compactMode === "confirm") {
+    try {
+      client?.tui?.showToast?.({ body: { title: "Kompaktacja sugerowana", message: msg, variant: "warning", duration: 8000 } })
+    } catch { /* ignore */ }
+  }
+  // tryb auto: nic nie robimy — OpenCode ma compaction.auto=true i skompaktuje sam
+}
+
+async function updateContextTokensFromMessage(event: any, client: any): Promise<void> {
+  const info = event?.properties?.info ?? event?.info
+  if (!info || info.role !== "assistant") return
+  const tokens = info.tokens
+  if (!tokens || typeof tokens.input !== "number") return
+  lastContextTokens = tokens.input
+  const modelKey = info.providerID && info.modelID ? `${info.providerID}/${info.modelID}` : ""
+  if (modelKey && modelKey !== lastAssistantModel) {
+    lastAssistantModel = modelKey
+    if (cfg.maxContextTokens === 0 && modelContextLimit === 0) {
+      const lim = await autodetectModelLimit(client, modelKey)
+      if (lim > 0) modelContextLimit = lim
+    }
+  }
+  maybeShowCompactSuggestion(client)
+}
+
+function memoryCompactStatus(): string {
+  return compactStatusText()
+}
+
+function memoryCompactReset(): string {
+  compactSuggestionShown = false
+  return "Flaga sugestii kompaktacji zresetowana. /memory compact-status pokaże bieżący stan."
+}
+
+async function memoryCompactNow(client: any): Promise<string> {
+  // OpenCode nie ma dedykowanego endpointa do wymuszenia kompaktacji przez SDK.
+  // Próbujemy wyzwolić przez tui.executeCommand (komenda /compact jeśli zdefiniowana),
+  // a jako fallback instrukcja dla użytkownika.
+  try {
+    if (client?.tui?.executeCommand) {
+      await client.tui.executeCommand({ body: { command: "/compact" } })
+      return "Wysłano komendę /compact do TUI. Jeśli nie zadziałał, użyj natywnej komendy OpenCode."
+    }
+  } catch { /* ignore */ }
+  return [
+    "Brak API do programowego wymuszenia kompaktacji.",
+    "Opcje:",
+    "  1. Wciśnij natywną komendę kompaktacji w OpenCode TUI",
+    "  2. Ustaw compaction.auto=true w opencode.json (auto-kompaktacja przy overflow)",
+    "  3. Kontynuuj — OpenCode skompaktuje przy następnym message (gdy auto=true)",
+    "",
+    compactStatusText(),
+  ].join("\n")
 }
 
 // --- /memory init ------------------------------------------------------------
@@ -1679,7 +1831,10 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
         if (type === "session.created") {
           const sessionId = event?.properties?.info?.sessionID ?? event?.properties?.sessionId ?? ""
           lastSessionId = sessionId
+          currentSessionId = sessionId
           metrics.sessionId = sessionId
+          compactSuggestionShown = false
+          lastContextTokens = 0
           // Addition 2: start fresh per-session trace
           sessionTrace = {
             sessionId,
@@ -1752,8 +1907,42 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
           if (cmd.startsWith("/memory ") || cmd.startsWith("/context ")) {
             // handled below via tui.command.execute; nothing here
           }
+        } else if (type === "message.updated" || type === "message.completed") {
+          await updateContextTokensFromMessage(event, client)
         }
       }, `event:${event?.type ?? "?"}`)
+    },
+
+    // -------------------------------------- experimental compaction hooks
+    "experimental.session.compacting": async (input: any, output: any) => {
+      await failOpenAsync(async () => {
+        // Wzbogać kontekst po kompaktacji o project-facts + handoff,
+        // aby agent zachował istotny kontekst projektu.
+        if (cfg.autoExtractFacts) failOpen(() => refreshAutoFacts(), "refreshAutoFacts on compacting")
+        const facts = readProjectFacts()
+        const sess = readActiveSession()
+        const extra: string[] = []
+        if (facts) extra.push("PROJECT FACTS:\n" + facts)
+        if (sess) {
+          const handoffBits: string[] = []
+          if (sess.goal) handoffBits.push(`Cel: ${sess.goal}`)
+          if (sess.currentStatus) handoffBits.push(`Status: ${sess.currentStatus}`)
+          if (sess.modifiedFiles?.length) handoffBits.push(`Edytowane pliki: ${sess.modifiedFiles.slice(0, 10).join(", ")}`)
+          if (sess.blockers?.length) handoffBits.push(`Blokerzy: ${sess.blockers.join("; ")}`)
+          if (sess.testStatus) handoffBits.push(`Ostatni test (${sess.testStatus.exitCode}): ${sess.testStatus.summary}`)
+          if (handoffBits.length) extra.push("SESSION HANDOFF:\n" + handoffBits.join("\n"))
+        }
+        if (extra.length) (output.context as string[]).push(...extra)
+      }, "experimental.session.compacting")
+    },
+
+    "experimental.compaction.autocontinue": async (input: any, output: any) => {
+      await failOpenAsync(async () => {
+        // Reset flagi sugestii po kompaktacji; zostaw autocontinue włączone.
+        compactSuggestionShown = false
+        lastContextTokens = 0
+        if (cfg.compactMode === "off") output.enabled = true
+      }, "experimental.compaction.autocontinue")
     },
 
     // ----------------------------------------------------- tool.execute hooks
@@ -1833,6 +2022,9 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
         else if (cmd.startsWith("/memory auto-refresh")) output.result = memoryAutoRefresh()
         else if (cmd.startsWith("/memory auto")) output.result = memoryAutoShow()
         else if (cmd.startsWith("/memory init")) output.result = memoryInit(cmd.replace(/^\/memory init\s*/, ""))
+        else if (cmd.startsWith("/memory compact-status")) output.result = memoryCompactStatus()
+        else if (cmd.startsWith("/memory compact-reset")) output.result = memoryCompactReset()
+        else if (cmd.startsWith("/memory compact-now")) output.result = await memoryCompactNow(client)
         else if (cmd.startsWith("/memory test-history")) output.result = memoryTestHistory()
         else if (cmd.startsWith("/context budget")) output.result = contextBudget()
         else if (cmd.startsWith("/context artifacts")) output.result = contextArtifacts()
