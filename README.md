@@ -270,6 +270,8 @@ Pokazuje:
 - liczbę wpisów deduplikacji (`SeenContext`) w bieżącej sesji
 - liczbę artefaktów i łączny rozmiar katalogu `artifacts/`
 - podsumowanie metryk: liczba wywołań narzędzi, procent redukcji, liczba deduplikowanych odczytów
+- **oszczędność tokenów** (szacunek): łączna liczba zaoszczędzonych znaków z filtracji wyników narzędzi i deduplikacji odczytów, przeliczona na tokeny (chars/4)
+- bieżący rozmiar kontekstu i limit (tryb kompaktacji)
 
 Przykład wyjścia:
 
@@ -280,6 +282,8 @@ Active session: ses_abc123 (updated 2026-07-30T15:00:00Z)
 Seen contexts: 7
 Artifacts: 3 (84.2 KB)
 Metrics: 42 tool calls, 76.9% reduction, 11 dedup reads
+Saved: ~12340 tokens (49360 chars) — filtracja + deduplikacja
+Context: 165432 / 200000 tokens (mode=suggest)
 ```
 
 #### `/memory show`
@@ -745,14 +749,22 @@ Statystyki zapisywane w `.opencode/memory/cache/metrics.json`:
   "toolCalls": 42,
   "rawChars": 485000,
   "deliveredChars": 112000,
-  "estimatedReductionPercent": 76.9,
   "deduplicatedReads": 11,
+  "dedupSavedChars": 84000,
+  "estimatedReductionPercent": 76.9,
+  "estimatedSavedChars": 457000,
+  "estimatedSavedTokens": 114250,
   "artifactsCreated": 7,
   "artifactBytes": 84000
 }
 ```
 
-Szacunek tokenów = `chars / 4` (uproszczenie; zależy od modelu). Podgląd przez `/memory status` lub `/context budget`.
+**Oszczędność tokenów** (`estimatedSavedTokens`) to szacunek łącznej liczby tokenów, których plugin nie wysłał do modelu, z dwóch źródeł:
+
+1. **Filtracja wyników narzędzi** — `rawChars - deliveredChars`: skracanie długich outputów (testy, build, git diff, grep) z zachowaniem kodu wyjścia, pierwszego błędu i podsumowania; limity linii (`maxToolResultLines`, `maxDiffLines`, `maxSearchMatches`).
+2. **Deduplikacja odczytów** — `dedupSavedChars`: pełna długość odrzuconego contentu, gdy ten sam plik jest czytany ponownie w tej samej sesji (zgodność hash + zakres linii).
+
+Tokeny = `chars / 4` (standardowe przybliżenie dla kodu/tekstu angielskiego; dokładna liczba zależy od tokenizatora modelu — to szacunek ±15%). Podgląd na bieżąco przez `/memory status` (aktualizowane po każdym wywołaniu narzędzia) lub `/context budget`. Metryki resetowane przez `/memory clear-session`.
 
 Błędy pluginu logowane są w `.opencode/memory/plugin-errors.log`. Plugin działa w trybie **fail-open** — błąd nie zatrzymuje OpenCode.
 
