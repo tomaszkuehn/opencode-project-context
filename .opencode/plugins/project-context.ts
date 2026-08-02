@@ -103,6 +103,30 @@ type Metrics = {
   estimatedSavedTokens: number
   artifactsCreated: number
   artifactBytes: number
+  // --- TUI live stats (filled in flushMetrics) ---
+  contextTokens: number
+  contextLimit: number
+  compactThresholdPct: number
+  compactMode: string
+  headSha: string
+  dirtyFiles: number
+  diskBytes: number
+  diskLimitBytes: number
+  artifactsBytes: number
+  cacheBytes: number
+  handoffAgeMin: number
+  modifiedCount: number
+  decisionsCount: number
+  blockersCount: number
+  dedupCacheCount: number
+  dedupCacheMax: number
+  testHistoryCount: number
+  testHistoryMax: number
+  lspErrorsCount: number
+  lastGoodHead: string
+  revertsCount: number
+  factsTokens: number
+  factsMaxTokens: number
 }
 
 type TestRun = {
@@ -175,6 +199,29 @@ let metrics: Metrics = {
   estimatedSavedTokens: 0,
   artifactsCreated: 0,
   artifactBytes: 0,
+  contextTokens: 0,
+  contextLimit: 0,
+  compactThresholdPct: 80,
+  compactMode: "suggest",
+  headSha: "",
+  dirtyFiles: 0,
+  diskBytes: 0,
+  diskLimitBytes: MAX_ARTIFACT_DIR_MB * 1024 * 1024,
+  artifactsBytes: 0,
+  cacheBytes: 0,
+  handoffAgeMin: 0,
+  modifiedCount: 0,
+  decisionsCount: 0,
+  blockersCount: 0,
+  dedupCacheCount: 0,
+  dedupCacheMax: 500,
+  testHistoryCount: 0,
+  testHistoryMax: 50,
+  lspErrorsCount: 0,
+  lastGoodHead: "",
+  revertsCount: 0,
+  factsTokens: 0,
+  factsMaxTokens: 1500,
 }
 let lastInjectedContext = ""
 let lastSessionId = ""
@@ -1422,12 +1469,64 @@ function readArtifact(artifactId: string, offset = 0, limit = cfg.maxArtifactPre
 // Metrics
 // ---------------------------------------------------------------------------
 
+function dirSizeBytes(dir: string): number {
+  let total = 0
+  let entries: string[] = []
+  try { entries = readdirSync(dir) } catch { return 0 }
+  for (const f of entries) {
+    const full = join(dir, f)
+    let st
+    try { st = statSync(full) } catch { continue }
+    if (st.isDirectory()) total += dirSizeBytes(full)
+    else total += st.size
+  }
+  return total
+}
+
 function flushMetrics() {
   metrics.estimatedReductionPercent = metrics.rawChars > 0
     ? +(((metrics.rawChars - metrics.deliveredChars) / metrics.rawChars) * 100).toFixed(1)
     : 0
   metrics.estimatedSavedChars = Math.max(0, metrics.rawChars - metrics.deliveredChars) + metrics.dedupSavedChars
   metrics.estimatedSavedTokens = Math.round(metrics.estimatedSavedChars / 4)
+  // --- TUI live stats ---
+  metrics.contextTokens = lastContextTokens
+  metrics.contextLimit = effectiveContextLimit()
+  metrics.compactThresholdPct = cfg.compactThreshold
+  metrics.compactMode = cfg.compactMode
+  metrics.headSha = failOpenReturn(() => getHeadSha().slice(0, 8), "", "flushMetrics headSha")
+  metrics.dirtyFiles = failOpenReturn(() => gitStatusPorcelain().length, 0, "flushMetrics dirty")
+  metrics.artifactsBytes = dirSizeBytes(artifactsDir())
+  metrics.cacheBytes = dirSizeBytes(join(memoryDir, "cache"))
+  metrics.diskBytes = metrics.artifactsBytes + metrics.cacheBytes
+  metrics.diskLimitBytes = MAX_ARTIFACT_DIR_MB * 1024 * 1024
+  metrics.dedupCacheMax = cfg.maxDedupCacheEntries
+  metrics.dedupCacheCount = seen.length
+  metrics.testHistoryMax = cfg.maxTestHistoryEntries
+  metrics.testHistoryCount = testHistory.length
+  metrics.factsMaxTokens = cfg.maxProjectMemoryTokens
+  metrics.factsTokens = failOpenReturn(() => estimateTokens(readText(factsPath()) ?? ""), 0, "flushMetrics factsTokens")
+  const sess = failOpenReturn(() => readActiveSession(), null, "flushMetrics activeSession")
+  if (sess) {
+    metrics.modifiedCount = sess.modifiedFiles?.length ?? 0
+    metrics.decisionsCount = sess.decisions?.length ?? 0
+    metrics.blockersCount = sess.blockers?.length ?? 0
+    metrics.lspErrorsCount = sess.lspErrors?.length ?? 0
+    if (sess.updatedAt) {
+      const ageMs = Date.now() - Date.parse(sess.updatedAt)
+      metrics.handoffAgeMin = ageMs > 0 ? Math.floor(ageMs / 60000) : 0
+    } else {
+      metrics.handoffAgeMin = 0
+    }
+  } else {
+    metrics.modifiedCount = 0
+    metrics.decisionsCount = 0
+    metrics.blockersCount = 0
+    metrics.lspErrorsCount = 0
+    metrics.handoffAgeMin = 0
+  }
+  const reg = failOpenReturn(() => findRegressionWindow(), { lastGood: null, firstRed: null, failingTest: "" }, "flushMetrics regression")
+  metrics.lastGoodHead = reg.lastGood?.head?.slice(0, 8) ?? ""
   writeJson(metricsPath(), metrics)
   // Addition 1: persist dedup cache to disk
   failOpen(() => saveDedupCache(), "saveDedupCache")
@@ -1492,7 +1591,7 @@ function memoryShow(): string {
 
 function memoryClearSession(): string {
   seen = []
-  metrics = { ...metrics, toolCalls: 0, rawChars: 0, deliveredChars: 0, deduplicatedReads: 0, dedupSavedChars: 0, estimatedSavedChars: 0, estimatedSavedTokens: 0 }
+  metrics = { ...metrics, toolCalls: 0, rawChars: 0, deliveredChars: 0, deduplicatedReads: 0, dedupSavedChars: 0, estimatedSavedChars: 0, estimatedSavedTokens: 0, artifactsCreated: 0, artifactBytes: 0, contextTokens: 0, dedupCacheCount: 0, testHistoryCount: 0, modifiedCount: 0, decisionsCount: 0, blockersCount: 0, lspErrorsCount: 0, handoffAgeMin: 0 }
   testHistory = []
   sessionTrace = { sessionId: lastSessionId, buildTestCommands: {}, editedFiles: {}, blockers: [], startedAt: new Date().toISOString() }
   try {
