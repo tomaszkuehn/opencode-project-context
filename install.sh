@@ -82,30 +82,31 @@ if [[ ! -f "$OC" ]]; then
   cat > "$OC" <<'JSON'
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["./.opencode/plugins/project-context.ts"],
-  "contextOptimizer": {
-    "enabled": true,
-    "maxProjectMemoryTokens": 1500,
-    "maxSessionHandoffTokens": 1000,
-    "maxToolResultLines": 100,
-    "maxDiffLines": 120,
-    "maxSearchMatches": 40,
-    "maxArtifactPreviewLines": 80,
-    "deduplicateReadResults": true,
-    "storeFullArtifacts": true,
-    "persistentDedupCache": true,
-    "maxDedupCacheEntries": 500,
-    "maxTestHistoryEntries": 50,
-    "regressionTrackHead": true,
-    "regressionSafeRevertOnly": true,
-    "autoExtractFacts": true,
-    "autoExtractOnEvents": ["session.idle", "session.compacted"],
-    "factsAutoGlobDepth": 3,
-    "compactMode": "suggest",
-    "maxContextTokens": 0,
-    "compactThreshold": 80,
-    "compactReservedTokens": 10000
-  }
+  "plugin": [
+    ["./.opencode/plugins/project-context.ts", {
+      "enabled": true,
+      "maxProjectMemoryTokens": 1500,
+      "maxSessionHandoffTokens": 1000,
+      "maxToolResultLines": 100,
+      "maxDiffLines": 120,
+      "maxSearchMatches": 40,
+      "maxArtifactPreviewLines": 80,
+      "deduplicateReadResults": true,
+      "storeFullArtifacts": true,
+      "persistentDedupCache": true,
+      "maxDedupCacheEntries": 500,
+      "maxTestHistoryEntries": 50,
+      "regressionTrackHead": true,
+      "regressionSafeRevertOnly": true,
+      "autoExtractFacts": true,
+      "autoExtractOnEvents": ["session.idle", "session.compacted"],
+      "factsAutoGlobDepth": 3,
+      "compactMode": "suggest",
+      "maxContextTokens": 0,
+      "compactThreshold": 80,
+      "compactReservedTokens": 10000
+    }]
+  ]
 }
 JSON
   say "Utworzono opencode.json"
@@ -117,8 +118,8 @@ else
     warn '      "plugin": ["./.opencode/plugins/project-context.ts"]'
   fi
   # sprawdź contextOptimizer
-  if ! grep -q 'contextOptimizer' "$OC"; then
-    warn "  → brak sekcji 'contextOptimizer' — dodaj ją ręcznie (zobacz README.md)"
+  if ! grep -q 'contextOptimizer\|"plugin"' "$OC"; then
+    warn "  → brak sekcji 'plugin' z konfiguracją — dodaj ją ręcznie (zobacz README.md)"
   fi
 fi
 

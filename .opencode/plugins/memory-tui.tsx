@@ -204,9 +204,8 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
 
   refresh()
   const timer = setInterval(refresh, 3000)
-  // cleanup on unmount — Solid stores disposal via createRoot normally;
-  // here we rely on route teardown. Best-effort: clear on dialog clear.
-  // (OpenCode route lifecycle will dispose the render tree.)
+  // Cleanup interval on plugin teardown — prevents timer leak when route unmounts.
+  api.lifecycle.onDispose(() => clearInterval(timer))
 
   const m = createMemo(() => metrics())
   const s = createMemo(() => sess())

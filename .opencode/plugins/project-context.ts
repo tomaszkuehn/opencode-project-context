@@ -314,6 +314,15 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4)
 }
 
+// Truncate by byte budget without splitting multi-byte UTF-8 characters
+// ( Polish diacritics like ł, ą, ż are multi-byte; naive .slice() can
+//   produce a trailing replacement character / corrupted glyph ).
+function truncateByBytes(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text, "utf8")
+  if (buf.length <= maxBytes) return text
+  return buf.subarray(0, maxBytes).toString("utf8")
+}
+
 function truncateLines(text: string, maxLines: number): string {
   const lines = text.split("\n")
   if (lines.length <= maxLines) return text
@@ -322,11 +331,6 @@ function truncateLines(text: string, maxLines: number): string {
 
 function maskSecrets(text: string): string {
   let out = text
-  for (const p of SECRET_PATTERNS) {
-    out = out.replace(p, (m) => m.replace(/=.*$|:.+$/, "=...") )
-  }
-  // simpler approach: replace matched secret value with placeholder
-  out = text
   for (const p of SECRET_PATTERNS) {
     out = out.replace(p, (match) => {
       // keep key name, mask value
@@ -624,7 +628,7 @@ function readAutoFacts(): string {
   if (!raw) return ""
   const tokens = estimateTokens(raw)
   if (tokens > cfg.maxProjectMemoryTokens) {
-    return raw.slice(0, cfg.maxProjectMemoryTokens * 4) + "\n\n[WARN: project-facts.auto.md exceeds memory budget; truncated]"
+    return truncateByBytes(raw, cfg.maxProjectMemoryTokens * 4) + "\n\n[WARN: project-facts.auto.md exceeds memory budget; truncated]"
   }
   return raw
 }
@@ -866,8 +870,8 @@ function readProjectFacts(): string {
   if (!merged) return ""
   const tokens = estimateTokens(merged)
   if (tokens > cfg.maxProjectMemoryTokens) {
-    const maxChars = cfg.maxProjectMemoryTokens * 4
-    const truncated = merged.slice(0, maxChars)
+    const maxBytes = cfg.maxProjectMemoryTokens * 4
+    const truncated = truncateByBytes(merged, maxBytes)
     return truncated + "\n\n[WARN: project-facts exceeds memory budget; truncated]"
   }
   return merged
@@ -1120,7 +1124,8 @@ function regressionRevert(args: string): string {
   }
 
   if (action === "all") {
-    if (safe) {
+    const confirmed = parts[1] === "confirm"
+    if (safe && !confirmed) {
       return [
         "OSTRZEŻENIE: 'all' wykonuje git checkout <sha> -- . (przywraca WSZYSTKIE pliki do last-good).",
         "Tryb bezpieczny (regressionSafeRevertOnly) wymaga potwierdzenia. Aby wykonać, wpisz:",
@@ -1196,7 +1201,7 @@ function buildInjectedContext(facts: string, session: ActiveSession | null, git:
   let block = lines.join("\n")
   const budget = cfg.maxProjectMemoryTokens
   if (estimateTokens(block) > budget) {
-    block = block.slice(0, budget * 4)
+    block = truncateByBytes(block, budget * 4)
     block += "\n[truncated to memory budget]"
   }
   return block
@@ -1303,7 +1308,14 @@ function summarizeDiff(result: string): string {
   // files list
   const files = lines
     .filter((l) => l.startsWith("diff --git") || l.startsWith("+++") || l.startsWith("---"))
-    .map((l) => l.replace(/^diff --git a\//, "").replace(/^.{0,8}/, ""))
+    .map((l) => {
+      if (l.startsWith("diff --git a/")) return l.replace(/^diff --git a\//, "").replace(/\sb\/.*$/, "")
+      if (l.startsWith("+++ b/")) return l.slice(6)
+      if (l.startsWith("--- a/")) return l.slice(6)
+      if (l.startsWith("+++ ")) return l.slice(4)
+      if (l.startsWith("--- ")) return l.slice(4)
+      return l
+    })
     .slice(0, 20)
   // first hunk(s)
   const hunks: string[] = []
@@ -1637,13 +1649,49 @@ function memoryShow(): string {
 
 function memoryClearSession(): string {
   seen = []
-  metrics = { ...metrics, toolCalls: 0, rawChars: 0, deliveredChars: 0, deduplicatedReads: 0, dedupSavedChars: 0, estimatedSavedChars: 0, estimatedSavedTokens: 0, artifactsCreated: 0, artifactBytes: 0, contextTokens: 0, dedupCacheCount: 0, testHistoryCount: 0, modifiedCount: 0, decisionsCount: 0, blockersCount: 0, lspErrorsCount: 0, handoffAgeMin: 0 }
+  metrics = {
+    ...metrics,
+    sessionId: lastSessionId,
+    toolCalls: 0,
+    rawChars: 0,
+    deliveredChars: 0,
+    deduplicatedReads: 0,
+    dedupSavedChars: 0,
+    estimatedReductionPercent: 0,
+    estimatedSavedChars: 0,
+    estimatedSavedTokens: 0,
+    artifactsCreated: 0,
+    artifactBytes: 0,
+    contextTokens: 0,
+    contextLimit: effectiveContextLimit(),
+    headSha: "",
+    dirtyFiles: 0,
+    diskBytes: 0,
+    artifactsBytes: 0,
+    cacheBytes: 0,
+    handoffAgeMin: 0,
+    modifiedCount: 0,
+    decisionsCount: 0,
+    blockersCount: 0,
+    dedupCacheCount: 0,
+    testHistoryCount: 0,
+    lspErrorsCount: 0,
+    lastGoodHead: "",
+    revertsCount: 0,
+    factsTokens: 0,
+  }
   testHistory = []
   sessionTrace = { sessionId: lastSessionId, buildTestCommands: {}, editedFiles: {}, blockers: [], startedAt: new Date().toISOString() }
   try {
     rmSync(activeSessionPath(), { force: true })
-    rmSync(join(memoryDir, "cache"), { recursive: true, force: true })
-    ensureDir(join(memoryDir, "cache"))
+    // Preserve aggregated session-trace.json (persistent across sessions).
+    // Remove only per-session caches: dedup-seen, test-history, metrics.
+    rmSync(dedupCachePath(), { force: true })
+    rmSync(testHistoryPath(), { force: true })
+    rmSync(metricsPath(), { force: true })
+    // Prune artifacts dir (session-scoped); recreate empty.
+    rmSync(artifactsDir(), { recursive: true, force: true })
+    ensureDir(artifactsDir())
   } catch {
     // ignore
   }
@@ -2093,7 +2141,10 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
           if (sess.testStatus) handoffBits.push(`Ostatni test (${sess.testStatus.exitCode}): ${sess.testStatus.summary}`)
           if (handoffBits.length) extra.push("SESSION HANDOFF:\n" + handoffBits.join("\n"))
         }
-        if (extra.length) (output.context as string[]).push(...extra)
+        if (extra.length) {
+          if (!Array.isArray(output.context)) output.context = []
+          ;(output.context as string[]).push(...extra)
+        }
       }, "experimental.session.compacting")
     },
 
