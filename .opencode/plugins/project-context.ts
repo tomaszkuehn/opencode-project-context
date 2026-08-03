@@ -1869,13 +1869,12 @@ function memoryCompactReset(): string {
 }
 
 async function memoryCompactNow(client: any): Promise<string> {
-  // OpenCode nie ma dedykowanego endpointa do wymuszenia kompaktacji przez SDK.
-  // Próbujemy wyzwolić przez tui.executeCommand (komenda /compact jeśli zdefiniowana),
-  // a jako fallback instrukcja dla użytkownika.
+  // Wyzwolenie kompaktacji przez tui.executeCommand z komendą "session.compact"
+  // (wartość z enum EventTuiCommandExecute.properties.command, a nie "/compact").
   try {
     if (client?.tui?.executeCommand) {
-      await client.tui.executeCommand({ body: { command: "/compact" } })
-      return "Wysłano komendę /compact do TUI. Jeśli nie zadziałał, użyj natywnej komendy OpenCode."
+      await client.tui.executeCommand({ body: { command: "session.compact" } })
+      return "Wysłano komendę session.compact do TUI. Jeśli nie zadziałał, użyj natywnej komendy OpenCode."
     }
   } catch { /* ignore */ }
   return [
@@ -2053,9 +2052,9 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
           const git = await gitInfo($)
           const block = buildInjectedContext(facts, sess, git)
           lastInjectedContext = block
-          // Try to append to the session prompt via TUI
+          // Try to append to the TUI prompt (SDK: tui.appendPrompt)
           try {
-            await client?.session?.prompt?.append?.({ body: { content: block } })
+            await client?.tui?.appendPrompt?.({ body: { text: block } })
           } catch {
             // append not available; context stored for /memory show
           }
@@ -2116,7 +2115,7 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
             await failOpenAsync(async () => { out.result = memoryTuiDump() }, "command.executed /memory tui")
             if (out.result) console.log(out.result)
           }
-        } else if (type === "message.updated" || type === "message.completed") {
+        } else if (type === "message.updated") {
           await updateContextTokensFromMessage(event, client)
         }
       }, `event:${event?.type ?? "?"}`)
