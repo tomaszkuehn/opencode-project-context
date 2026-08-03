@@ -2078,14 +2078,14 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
             if (sid) rmSync(join(memoryDir, "session-history", `${sid}.json`), { force: true })
           }, "session.deleted cleanup")
         } else if (type === "lsp.client.diagnostics") {
+          // TODO: SDK v1.18.11 nie eksponuje diagnostyk LSP — EventLspClientDiagnostics
+          // ma tylko { serverID, path }, bez listy błędów. Endpoint /lsp zwraca tylko
+          // status serwera (connected/error). Gdy SDK udostępni diagnostyki, wyciągnij
+          // je tutaj i zapisz w sess.lspErrors. Pozostawiono jako no-op, aby utrzymać
+          // strukturę i sygnalizować brakujące API.
           const sess = readActiveSession()
           if (sess) {
-            const diags = event?.properties?.diagnostics ?? event?.properties?.info?.diagnostics ?? []
-            const errs = (Array.isArray(diags) ? diags : [])
-              .filter((d: any) => d.severity === "error" || d.severity === 1)
-              .map((d: any) => `${d.file ?? d.uri ?? ""}:${d.range?.start?.line ?? "?"} ${d.message ?? ""}`)
-              .slice(0, 20)
-            sess.lspErrors = errs
+            sess.lspErrors = []
             writeActiveSession(sess)
           }
         } else if (type === "file.edited") {
