@@ -424,6 +424,24 @@ dedup cache: 127/500 · tests: 14/50
 
 W trybie TUI (interaktywnym) ten sam widok jest odświeżany na żywo co 3 s w pasku statusu pluginu `memory-tui.tsx`.
 
+#### `/memory dashboard`
+
+Pełnoekranowy dashboard TUI — własny route `memory-dashboard` z 7 sekcjami: oszczędność tokenów, dysk, budżet kontekstu, sesja (goal/status/blokery/błędy LSP), cache, historia testów (10 ostatnich), artefakty (10 największych). Odświeżanie co 3 s. Dostępny w trybie interaktywnym przez `api.route.navigate("memory-dashboard")` lub toast przy przekroczeniu progu.
+
+### Powiadomienia TUI (toast + dialog)
+
+Plugin `memory-tui.tsx` automatycznie pokazuje powiadomienia w trybie interaktywnym:
+
+- **Toast warning** gdy kontekst ≥ próg kompaktacji (mode=suggest) — `Kontekst 82% — /memory compact-now`
+- **Dialog confirm** gdy kontekst ≥ próg kompaktacji (mode=confirm) — `Skompaktować sesję? [Y/N]`
+- **Toast error** gdy dysk ≥ 90% limitu 200 MB — `Pamięć pluginu 180MB (90%) — /memory clear-session`
+
+Sprawdzanie co 5 s, deduplikacja (toast nie powtarza się dopóki warunek nie zniknie i nie wróci).
+
+### Sidebar enrichment
+
+W slocie `sidebar_content` plugin dokłada blok z aktualnymi blokerami i błędami LSP (z `active-session.json`), jeśli jakieś są. Odświeżanie co 5 s. Skrócone do 60 znaków, max 3 pozycje na kategorię.
+
 ### `/context <subkomenda>`
 
 Komendy diagnostyki budżetu kontekstu i artefaktów.
@@ -556,6 +574,7 @@ Przywraca pliki do wersji z last-good (`git checkout <last-good-sha> -- <file>`)
 /memory compact-reset    # zresetuj flagę sugestii
 /memory test-history      # historia uruchomień testów/buildów
 /memory tui              # tekstowy widok TUI (działa w CLI)
+/memory dashboard        # pełnoekranowy dashboard TUI (route: memory-dashboard)
 /regression last-good     # kiedy testy przeszły ostatnio?
 /regression suspect       # które pliki/commity spowodowały regresję?
 /regression revert stash  # zstashuj zmiany (odwracalne)

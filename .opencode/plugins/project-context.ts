@@ -2188,6 +2188,7 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
         else if (cmd.startsWith("/memory compact-now")) output.result = await memoryCompactNow(client)
         else if (cmd.startsWith("/memory test-history")) output.result = memoryTestHistory()
         else if (cmd.startsWith("/memory tui")) output.result = memoryTuiDump()
+        else if (cmd.startsWith("/memory dashboard")) output.result = "Dashboard TUI: użyj w trybie interaktywnym (route: memory-dashboard)"
         else if (cmd.startsWith("/context budget")) output.result = contextBudget()
         else if (cmd.startsWith("/context artifacts")) output.result = contextArtifacts()
         else if (cmd.startsWith("/regression last-good")) output.result = regressionLastGood()

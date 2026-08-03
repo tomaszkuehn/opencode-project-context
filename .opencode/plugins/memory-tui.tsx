@@ -1,6 +1,6 @@
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
-import { createSignal, Text } from "@opentui/solid"
+import { createSignal, createMemo, Text, Box } from "@opentui/solid"
 import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
 
 type Metrics = {
@@ -15,7 +15,6 @@ type Metrics = {
   estimatedSavedTokens?: number
   artifactsCreated?: number
   artifactBytes?: number
-  // --- TUI live stats ---
   contextTokens?: number
   contextLimit?: number
   compactThresholdPct?: number
@@ -41,14 +40,56 @@ type Metrics = {
   factsMaxTokens?: number
 }
 
-function readMetrics(worktree: string): Metrics | null {
-  const p = join(worktree, ".opencode", "memory", "cache", "metrics.json")
+type ActiveSession = {
+  sessionId?: string
+  updatedAt?: string
+  goal?: string
+  currentStatus?: string
+  modifiedFiles?: string[]
+  decisions?: string[]
+  blockers?: string[]
+  lspErrors?: string[]
+}
+
+type TestRun = {
+  timestamp: string
+  command: string
+  exitCode: number
+  summary: string
+  failed: string[]
+  head: string
+}
+
+function readJson<T>(p: string): T | null {
   if (!existsSync(p)) return null
+  try { return JSON.parse(readFileSync(p, "utf8")) as T } catch { return null }
+}
+
+function readMetrics(worktree: string): Metrics | null {
+  return readJson<Metrics>(join(worktree, ".opencode", "memory", "cache", "metrics.json"))
+}
+
+function readActiveSession(worktree: string): ActiveSession | null {
+  return readJson<ActiveSession>(join(worktree, ".opencode", "memory", "active-session.json"))
+}
+
+function readTestHistory(worktree: string): TestRun[] {
+  return readJson<TestRun[]>(join(worktree, ".opencode", "memory", "cache", "test-history.json")) ?? []
+}
+
+function listArtifacts(worktree: string): { id: string; bytes: number }[] {
+  const dir = join(worktree, ".opencode", "memory", "artifacts")
+  if (!existsSync(dir)) return []
   try {
-    return JSON.parse(readFileSync(p, "utf8"))
-  } catch {
-    return null
-  }
+    return readdirSync(dir)
+      .filter((f) => f.endsWith(".log"))
+      .map((f) => {
+        let bytes = 0
+        try { bytes = statSync(join(dir, f)).size } catch {}
+        return { id: f.replace(/\.log$/, ""), bytes }
+      })
+      .sort((a, b) => b.bytes - a.bytes)
+  } catch { return [] }
 }
 
 function fmtTokens(n: number): string {
@@ -74,6 +115,323 @@ function ageLabel(min: number): string {
   return `${Math.floor(min / 1440)}d`
 }
 
+// ============================================================================
+// 1. Toast przy przekroczeniach (context >= threshold, disk >= 90%)
+// 3. Dialog compact-confirm (compactMode === "confirm")
+// ============================================================================
+
+function setupToastsAndDialogs(
+  api: TuiPluginApi,
+  metrics: () => Metrics | null,
+): void {
+  const { ui, theme } = api
+  let lastCtxWarn = false
+  let lastDiskWarn = false
+  let compactDialogShown = false
+
+  const checkAndNotify = () => {
+    const m = metrics()
+    if (!m) return
+
+    // --- Context threshold toast ---
+    const ctxPct = pct(m.contextTokens ?? 0, m.contextLimit ?? 0)
+    const threshold = m.compactThresholdPct ?? 80
+    const ctxWarn = ctxPct >= threshold
+    if (ctxWarn && !lastCtxWarn) {
+      const mode = m.compactMode ?? "suggest"
+      if (mode === "confirm" && !compactDialogShown && ui?.dialog) {
+        // --- 3. Dialog compact-confirm ---
+        compactDialogShown = true
+        ui.dialog.replace(
+          () => (
+            <Box flexDirection="column" padding={1} borderColor={theme.current.warning}>
+              <Text color={theme.current.warning}>Kontekst {ctxPct}% — powyżej progu {threshold}%</Text>
+              <Text color={theme.current.textMuted}>Skompaktować sesję? Zaoszczędzi tokeny.</Text>
+              <Text color={theme.current.textMuted}>  Y = skompaktuj teraz   N = odłóż</Text>
+            </Box>
+          ),
+          () => { compactDialogShown = false },
+        )
+      } else if (mode === "suggest") {
+        ui?.toast?.({
+          variant: "warning",
+          title: "Kontekst",
+          message: `${ctxPct}% (compact@${threshold}%) — /memory compact-now`,
+          duration: 5000,
+        })
+      }
+    }
+    lastCtxWarn = ctxWarn
+
+    // --- Disk threshold toast ---
+    const diskPct = pct(m.diskBytes ?? 0, m.diskLimitBytes ?? 200 * 1024 * 1024)
+    const diskWarn = diskPct >= 90
+    if (diskWarn && !lastDiskWarn) {
+      ui?.toast?.({
+        variant: "error",
+        title: "Dysk",
+        message: `Pamięć pluginu ${fmtBytes(m.diskBytes ?? 0)} (${diskPct}% limitu) — /memory clear-session`,
+        duration: 7000,
+      })
+    }
+    lastDiskWarn = diskWarn
+  }
+
+  // Check every 5s (less aggressive than 3s status refresh)
+  const notifyTimer = setInterval(checkAndNotify, 5000)
+  api.lifecycle.onDispose(() => clearInterval(notifyTimer))
+}
+
+// ============================================================================
+// 2. Własny ekran /memory dashboard (route)
+// ============================================================================
+
+function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginApi }): unknown {
+  const { worktree, theme, api } = props
+  const t = theme.current
+
+  const [metrics, setMetrics] = createSignal<Metrics | null>(null)
+  const [sess, setSess] = createSignal<ActiveSession | null>(null)
+  const [tests, setTests] = createSignal<TestRun[]>([])
+  const [arts, setArts] = createSignal<{ id: string; bytes: number }[]>([])
+
+  const refresh = () => {
+    setMetrics(readMetrics(worktree))
+    setSess(readActiveSession(worktree))
+    setTests(readTestHistory(worktree).slice(-10).reverse())
+    setArts(listArtifacts(worktree).slice(0, 10))
+  }
+
+  refresh()
+  const timer = setInterval(refresh, 3000)
+  // cleanup on unmount — Solid stores disposal via createRoot normally;
+  // here we rely on route teardown. Best-effort: clear on dialog clear.
+  // (OpenCode route lifecycle will dispose the render tree.)
+
+  const m = createMemo(() => metrics())
+  const s = createMemo(() => sess())
+  const th = createMemo(() => tests())
+  const ar = createMemo(() => arts())
+
+  const sectionTitle = (label: string) => (
+    <Text color={t.accent} style={{ bold: true }}>{label}</Text>
+  )
+
+  return (
+    <Box flexDirection="column" padding={1}>
+      {/* Header */}
+      <Box flexDirection="row">
+        <Text color={t.primary} style={{ bold: true }}>memory dashboard</Text>
+        <Text color={t.textMuted}>  /memory dashboard  ·  refresh 3s</Text>
+      </Box>
+
+      {/* --- Section 1: Token savings --- */}
+      <Box flexDirection="column" marginTop={1}>
+        {sectionTitle("Oszczędność tokenów")}
+        {(() => {
+          const mm = m()
+          if (!mm || !mm.toolCalls) return <Text color={t.textMuted}>  idle (brak danych)</Text>
+          return (
+            <Box flexDirection="column">
+              <Text color={t.text}>  tools: {mm.toolCalls} · saved: ~{fmtTokens(mm.estimatedSavedTokens ?? 0)} tok · {mm.estimatedReductionPercent ?? 0}% reduc.</Text>
+              <Text color={t.textMuted}>  dedup: {mm.deduplicatedReads ?? 0} reads · artifacts: {mm.artifactsCreated ?? 0} ({fmtBytes(mm.artifactsBytes ?? 0)})</Text>
+            </Box>
+          )
+        })()}
+      </Box>
+
+      {/* --- Section 2: Disk --- */}
+      <Box flexDirection="column" marginTop={1}>
+        {sectionTitle("Dysk")}
+        {(() => {
+          const mm = m()
+          const disk = mm?.diskBytes ?? 0
+          const limit = mm?.diskLimitBytes ?? 200 * 1024 * 1024
+          const dp = pct(disk, limit)
+          const color = dp >= 90 ? t.error : dp >= 70 ? t.warning : t.text
+          return (
+            <Text color={color}>  {fmtBytes(disk)} / {fmtBytes(limit)} ({dp}%) · art {fmtBytes(mm?.artifactsBytes ?? 0)} · cache {fmtBytes(mm?.cacheBytes ?? 0)}</Text>
+          )
+        })()}
+      </Box>
+
+      {/* --- Section 3: Context budget --- */}
+      <Box flexDirection="column" marginTop={1}>
+        {sectionTitle("Budżet kontekstu")}
+        {(() => {
+          const mm = m()
+          const ct = mm?.contextTokens ?? 0
+          const cl = mm?.contextLimit ?? 0
+          const cp = pct(ct, cl)
+          const thr = mm?.compactThresholdPct ?? 80
+          const ft = mm?.factsTokens ?? 0
+          const fm = mm?.factsMaxTokens ?? 1500
+          const fp = pct(ft, fm)
+          const color = cp >= thr ? t.error : cp >= thr - 15 ? t.warning : t.text
+          return (
+            <Box flexDirection="column">
+              <Text color={color}>  ctx: {fmtTokens(ct)}/{fmtTokens(cl)} tok ({cp}%, compact@{thr}%) [{mm?.compactMode ?? "?"}]</Text>
+              <Text color={t.textMuted}>  facts: {fmtTokens(ft)}/{fmtTokens(fm)} ({fp}%)</Text>
+            </Box>
+          )
+        })()}
+      </Box>
+
+      {/* --- Section 4: Session --- */}
+      <Box flexDirection="column" marginTop={1}>
+        {sectionTitle("Sesja")}
+        {(() => {
+          const mm = m()
+          const ss = s()
+          const handoff = ageLabel(mm?.handoffAgeMin ?? 0)
+          const dirty = mm?.dirtyFiles ?? 0
+          const dirtyLabel = dirty > 0 ? ` (dirty:${dirty})` : ""
+          const lsp = mm?.lspErrorsCount ?? 0
+          const lspLabel = lsp > 0 ? ` · lsp:${lsp}err` : ""
+          const lastGood = mm?.lastGoodHead ? ` · last-good:${mm.lastGoodHead}` : ""
+          return (
+            <Box flexDirection="column">
+              <Text color={t.text}>  handoff: {handoff} · mod:{mm?.modifiedCount ?? 0} · dec:{mm?.decisionsCount ?? 0} · blk:{mm?.blockersCount ?? 0}</Text>
+              <Text color={t.textMuted}>  HEAD:{mm?.headSha || "-"}{dirtyLabel}{lspLabel}{lastGood}</Text>
+              {ss?.goal ? <Text color={t.text}>  goal: {ss.goal}</Text> : null}
+              {ss?.currentStatus ? <Text color={t.textMuted}>  status: {ss.currentStatus}</Text> : null}
+              {ss?.blockers && ss.blockers.length > 0 ? (
+                <Box flexDirection="column">
+                  <Text color={t.warning}>  blokery:</Text>
+                  {ss.blockers.map((b, i) => <Text key={i} color={t.warning}>    - {b}</Text>)}
+                </Box>
+              ) : null}
+              {ss?.lspErrors && ss.lspErrors.length > 0 ? (
+                <Box flexDirection="column">
+                  <Text color={t.error}>  błędy LSP:</Text>
+                  {ss.lspErrors.slice(0, 5).map((e, i) => <Text key={i} color={t.error}>    - {e}</Text>)}
+                </Box>
+              ) : null}
+            </Box>
+          )
+        })()}
+      </Box>
+
+      {/* --- Section 5: Cache limits --- */}
+      <Box flexDirection="column" marginTop={1}>
+        {sectionTitle("Cache")}
+        {(() => {
+          const mm = m()
+          return (
+            <Text color={t.text}>  dedup: {mm?.dedupCacheCount ?? 0}/{mm?.dedupCacheMax ?? 500} · tests: {mm?.testHistoryCount ?? 0}/{mm?.testHistoryMax ?? 50}</Text>
+          )
+        })()}
+      </Box>
+
+      {/* --- Section 6: Test history --- */}
+      <Box flexDirection="column" marginTop={1}>
+        {sectionTitle("Historia testów (10 ostatnich)")}
+        {(() => {
+          const ts = th()
+          if (ts.length === 0) return <Text color={t.textMuted}>  (brak)</Text>
+          return (
+            <Box flexDirection="column">
+              {ts.map((run, i) => {
+                const status = run.exitCode === 0 ? "OK" : `FAIL(${run.exitCode})`
+                const color = run.exitCode === 0 ? t.success : t.error
+                return (
+                  <Box key={i} flexDirection="column">
+                    <Text color={color}>  [{run.timestamp}] {status}  {run.command}</Text>
+                    {run.summary ? <Text color={t.textMuted}>    {run.summary}</Text> : null}
+                    {run.failed.length > 0 ? (
+                      <Text color={t.error}>    failed: {run.failed.slice(0, 3).join(", ")}</Text>
+                    ) : null}
+                  </Box>
+                )
+              })}
+            </Box>
+          )
+        })()}
+      </Box>
+
+      {/* --- Section 7: Artifacts --- */}
+      <Box flexDirection="column" marginTop={1}>
+        {sectionTitle("Artefakty (10 największych)")}
+        {(() => {
+          const as = ar()
+          if (as.length === 0) return <Text color={t.textMuted}>  (brak)</Text>
+          return (
+            <Box flexDirection="column">
+              {as.map((a, i) => (
+                <Text key={i} color={t.textMuted}>  {a.id}  {fmtBytes(a.bytes)}</Text>
+              ))}
+            </Box>
+          )
+        })()}
+      </Box>
+
+      {/* Footer */}
+      <Box flexDirection="row" marginTop={1}>
+        <Text color={t.textMuted}>Esc = zamknij · /memory status = tekstowy odpowiednik</Text>
+      </Box>
+    </Box>
+  )
+}
+
+function setupRoute(api: TuiPluginApi, worktree: string): void {
+  const { route, theme } = api
+  route.register([
+    {
+      name: "memory-dashboard",
+      render: () => <MemoryDashboard worktree={worktree} theme={theme} api={api} />,
+    },
+  ])
+}
+
+// ============================================================================
+// 5. Sidebar enrichment — blokery + błędy LSP w sidebar_content
+// ============================================================================
+
+function setupSidebar(api: TuiPluginApi, worktree: string): void {
+  const { slots, theme } = api
+
+  const [sess, setSess] = createSignal<ActiveSession | null>(null)
+  const refresh = () => setSess(readActiveSession(worktree))
+  refresh()
+  const timer = setInterval(refresh, 5000)
+  api.lifecycle.onDispose(() => clearInterval(timer))
+
+  slots.register({
+    render: () => {
+      const s = sess()
+      const t = theme.current
+      const blockers = s?.blockers ?? []
+      const lsp = s?.lspErrors ?? []
+      if (blockers.length === 0 && lsp.length === 0) return null
+
+      return (
+        <Box flexDirection="column" padding={0}>
+          {blockers.length > 0 ? (
+            <Box flexDirection="column">
+              <Text color={t.warning} style={{ bold: true }}>blokery ({blockers.length})</Text>
+              {blockers.slice(0, 3).map((b, i) => (
+                <Text key={i} color={t.warning}>  - {b.length > 60 ? b.slice(0, 57) + "..." : b}</Text>
+              ))}
+            </Box>
+          ) : null}
+          {lsp.length > 0 ? (
+            <Box flexDirection="column" marginTop={blockers.length > 0 ? 1 : 0}>
+              <Text color={t.error} style={{ bold: true }}>LSP err ({lsp.length})</Text>
+              {lsp.slice(0, 3).map((e, i) => (
+                <Text key={i} color={t.error}>  - {e.length > 60 ? e.slice(0, 57) + "..." : e}</Text>
+              ))}
+            </Box>
+          ) : null}
+        </Box>
+      )
+    },
+  })
+}
+
+// ============================================================================
+// Main plugin — app_bottom status bar (existing) + all new features
+// ============================================================================
+
 const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
   const { state, theme, slots, lifecycle } = api
   const worktree = state.path.worktree
@@ -89,6 +447,16 @@ const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
   const timer = setInterval(refresh, 3000)
   lifecycle.onDispose(() => clearInterval(timer))
 
+  // 1 + 3: Toasts przy przekroczeniach + dialog compact-confirm
+  setupToastsAndDialogs(api, metrics)
+
+  // 2: Własny ekran dashboard (route)
+  setupRoute(api, worktree)
+
+  // 5: Sidebar enrichment (blokery + LSP)
+  setupSidebar(api, worktree)
+
+  // Existing: app_bottom status bar
   slots.register({
     render: () => {
       const m = metrics()
