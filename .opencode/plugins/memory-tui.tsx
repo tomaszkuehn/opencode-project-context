@@ -396,6 +396,7 @@ function setupSidebar(api: TuiPluginApi, worktree: string): void {
   api.lifecycle.onDispose(() => clearInterval(timer))
 
   slots.register({
+    name: "sidebar_content",
     render: () => {
       const s = sess()
       const t = theme.current
@@ -457,6 +458,7 @@ const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
 
   // Existing: app_bottom status bar
   slots.register({
+    name: "app_bottom",
     render: () => {
       const m = metrics()
       const t = theme.current
