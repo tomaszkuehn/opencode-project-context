@@ -1,6 +1,16 @@
 {
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:plugin": "vitest run tests/commands.test.ts"
+  },
   "dependencies": {
     "@opentui/core": "^0.5.1",
     "@opentui/solid": "^0.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "tsx": "^4.23.5",
+    "vitest": "^2.1.9"
   }
 }

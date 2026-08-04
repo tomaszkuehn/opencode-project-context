@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "jsxImportSource": "@opentui/solid",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "lib": ["ESNext"],
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@opencode-ai/plugin": ["./stubs/@opencode-ai/plugin.ts"],
+      "@opencode-ai/plugin/tui": ["./stubs/@opencode-ai/plugin/tui.ts"]
+    }
+  },
+  "include": ["stubs/**/*.ts", "../.opencode/plugins/project-context.ts"]
+}
