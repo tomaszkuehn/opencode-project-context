@@ -270,6 +270,7 @@ let metrics: Metrics = {
   aiLastError: "",
 }
 let lastInjectedContext = ""
+let pendingSystemContext: string = ""                 // blok PROJECT MEMORY do wstrzykiwania w system prompt (experimental.chat.system.transform)
 let lastSessionId = ""
 
 // --- Additions: persistent dedup cache, test history, session trace ----------
@@ -2823,12 +2824,9 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
           const git = await gitInfo($)
           const block = buildInjectedContext(facts, sess, git)
           lastInjectedContext = block
-          // Try to append to the TUI prompt (SDK: tui.appendPrompt)
-          try {
-            await client?.tui?.appendPrompt?.({ body: { text: block } })
-          } catch {
-            // append not available; context stored for /memory show
-          }
+          // Wstrzykiwanie przez experimental.chat.system.transform (niewidoczne
+          // w oknie czatu — kontekst trafia do system prompta modela).
+          pendingSystemContext = block
         } else if (type === "session.idle" || type === "session.compacted") {
           const sessionId = event?.properties?.info?.sessionID ?? lastSessionId ?? ""
           // Use execSync-based helper: the Bun shell `$` may be unavailable
@@ -2949,6 +2947,16 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
         lastContextTokens = 0
         if (cfg.compactMode === "off") output.enabled = true
       }, "experimental.compaction.autocontinue")
+    },
+
+    // Wstrzykiwanie kontekstu projektu do system prompta (niewidoczne w oknie
+    // czatu). Dokłada blok PROJECT MEMORY (fakty + handoff + git) do output.system.
+    "experimental.chat.system.transform": async (input: any, output: any) => {
+      await failOpenAsync(async () => {
+        if (!pendingSystemContext) return
+        if (!Array.isArray(output.system)) output.system = []
+        ;(output.system as string[]).push(pendingSystemContext)
+      }, "experimental.chat.system.transform")
     },
 
     // ----------------------------------------------------- tool.execute hooks

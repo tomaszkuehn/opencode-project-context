@@ -859,7 +859,9 @@ Dzięki temu agent pobiera dokładnie interesujący fragment logu/diffu zamiast 
 2. Odczytuje `project-facts.md` (z ucięciem do budżetu).
 3. Odczytuje ostatni `active-session.json`.
 4. Pobiera minimalny stan Git (branch, krótki SHA HEAD, zmodyfikowane pliki, ostatnie 20 zmian).
-5. Buduje zwięzły blok `PROJECT MEMORY` i wstrzykuje go do sesji (≤ `maxProjectMemoryTokens`).
+5. Buduje zwięzły blok `PROJECT MEMORY` i wstrzykuje go do **system prompta** sesji przez hook `experimental.chat.system.transform` (≤ `maxProjectMemoryTokens`).
+
+> **Niewidoczne w oknie czatu:** kontekst startowy trafia do system prompta modela, a nie jako widoczna wiadomość w TUI. Nie trzeba go "wysyłać" — model dostaje go automatycznie przy pierwszym zapytaniu. Zobacz przez `/memory show` (sekcja `INJECTED CONTEXT (last session)`).
 
 ### 2. Handoff sesji (`session.idle` / `session.compacted`)
 
