@@ -1399,7 +1399,9 @@ async function gitInfo($: any): Promise<{ branch: string; head: string; modified
     try {
       const branch = execSync(`git -C ${JSON.stringify(worktreePath)} rev-parse --abbrev-ref HEAD`, { encoding: "utf8" }).trim() || "(detached)"
       const head = execSync(`git -C ${JSON.stringify(worktreePath)} rev-parse --short HEAD`, { encoding: "utf8" }).trim()
-      const recentDiff = gitFilesChangedBetween("HEAD~20", "HEAD").slice(0, 20)
+      const recentDiff = (gitFilesChangedBetween("HEAD~20", "HEAD").length
+        ? gitFilesChangedBetween("HEAD~20", "HEAD")
+        : gitFilesChangedBetween("", "HEAD")).slice(0, 20)
       return { branch, head, modified: gitStatusPorcelain(), recentDiff }
     } catch {
       return empty
@@ -1413,7 +1415,7 @@ async function gitInfo($: any): Promise<{ branch: string; head: string; modified
       .split("\n")
       .filter(Boolean)
       .map((l: string) => l.slice(3).trim())
-    const diffRaw = (await $`git -C ${worktreePath} diff --name-only HEAD~20 2>/dev/null || git -C ${worktreePath} diff --name-only`.text()).trim()
+    const diffRaw = (await $`git -C ${worktreePath} diff --name-only HEAD~20 2>/dev/null || git -C ${worktreePath} diff --name-only HEAD 2>/dev/null || true`.text()).trim()
     const recentDiff = diffRaw.split("\n").filter(Boolean).slice(0, 20)
     return { branch, head, modified, recentDiff }
   } catch {
@@ -1436,7 +1438,7 @@ function getHeadSha(): string {
 function gitFilesChangedBetween(fromSha: string, toSha: string): string[] {
   try {
     const range = fromSha && toSha ? `${fromSha}..${toSha}` : toSha || "HEAD"
-    const out = execSync(`git -C ${JSON.stringify(worktreePath)} diff --name-only ${range}`, { encoding: "utf8" })
+    const out = execSync(`git -C ${JSON.stringify(worktreePath)} diff --name-only ${range}`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
     return out.split("\n").filter(Boolean)
   } catch {
     return []
@@ -2754,7 +2756,7 @@ function buildInitFactsTemplate(force: boolean): { wrote: boolean; path: string;
 }
 
 function memoryInit(args: string): string {
-  const force = /\b--force\b/.test(args)
+  const force = /--force/.test(args)
   const res = buildInitFactsTemplate(force)
   const lines: string[] = []
   if (res.wrote) {
@@ -3001,48 +3003,82 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
       }),
     },
 
+    // ------------------------------------------------------ command interception
+    // UWAGA (root cause 2026-08-04): komendy z .opencode/command/*.md ZAWSZE
+    // trafiają do modelu jako prompt (command.execute.before -> prompt() -> LLM);
+    // opencode nie wspiera jeszcze pominięcia LLM (feature request #28292 noReply).
+    // Dlatego, gdy plugin jest aktywny, wynik deterministyczny liczymy tu i
+    // zapisujemy do .opencode/memory/command_result.txt; szablon komendy każe
+    // modelowi zwrócić ten plik 1:1 (gwarantowany determinizm), a gdy pluginu
+    // brak — model działa wg jawnego opisu w szablonie.
+    "command.execute.before": async (input: any, output: any) => {
+      await failOpenAsync(async () => {
+        const raw = String(input?.command ?? input?.input?.command ?? "")
+        const norm = raw.trim()
+        if (!/^\/?((memory|context|regression)\b)/.test(norm)) return
+        const slash = norm.startsWith("/") ? norm : "/" + norm
+        const result = dispatchCommand(slash)
+        if (result === undefined) return
+        try {
+          writeFileSync(commandResultPath(), `# ${slash}\n${result}`, "utf8")
+        } catch { /* ignore */ }
+      }, "command.execute.before")
+    },
+
     // ----------------------------------------------------------- TUI commands
     "tui.command.execute": async (input: any, output: any) => {
       await failOpenAsync(async () => {
         const cmd: string = input?.command ?? ""
-        if (cmd.startsWith("/memory status")) output.result = memoryStatus()
-        else if (cmd.startsWith("/memory show")) output.result = memoryShow()
-        else if (cmd.startsWith("/memory save")) {
-          const handoff = buildHandoff(lastSessionId, [])
-          writeActiveSession(handoff)
-          output.result = "Handoff saved."
-        }
-        else if (cmd.startsWith("/memory clear-session")) output.result = memoryClearSession()
-        else if (cmd.startsWith("/memory clear-project")) output.result = memoryClearProject()
-        else if (cmd.startsWith("/memory compact")) {
-          const handoff = buildHandoff(lastSessionId, [])
-          writeActiveSession(handoff)
-          output.result = "Compact handoff created."
-        }
-        else if (cmd.startsWith("/memory propose")) output.result = memoryPropose()
-        else if (cmd.startsWith("/memory commit")) output.result = commitProposedFacts()
-        else if (cmd.startsWith("/memory lesson")) output.result = memoryLesson(cmd.replace(/^\/memory lesson\s*/, ""))
-        else if (cmd.startsWith("/memory auto-refresh")) output.result = memoryAutoRefresh()
-        else if (cmd.startsWith("/memory auto")) output.result = memoryAutoShow()
-        else if (cmd.startsWith("/memory init")) output.result = memoryInit(cmd.replace(/^\/memory init\s*/, ""))
-        else if (cmd.startsWith("/memory compact-status")) output.result = memoryCompactStatus()
-        else if (cmd.startsWith("/memory compact-reset")) output.result = memoryCompactReset()
-        else if (cmd.startsWith("/memory compact-now")) output.result = await memoryCompactNow(client)
-        else if (cmd.startsWith("/memory test-history")) output.result = memoryTestHistory()
-        else if (cmd.startsWith("/memory ai status")) output.result = aiStatusText()
-        else if (cmd.startsWith("/memory ai triage")) output.result = await aiTriageFailedTests()
-        else if (cmd.startsWith("/memory ai")) output.result = aiStatusText()
-        else if (cmd.startsWith("/memory tui")) output.result = memoryTuiDump()
-        else if (cmd.startsWith("/memory dashboard")) output.result = "Dashboard TUI: użyj w trybie interaktywnym (route: memory-dashboard)"
-        else if (cmd.startsWith("/context budget")) output.result = contextBudget()
-        else if (cmd.startsWith("/context artifacts")) output.result = contextArtifacts()
-        else if (cmd.startsWith("/regression last-good")) output.result = regressionLastGood()
-        else if (cmd.startsWith("/regression suspect")) output.result = regressionSuspect()
-        else if (cmd.startsWith("/regression revert")) output.result = regressionRevert(cmd.replace(/^\/regression revert\s*/, ""))
-        else if (cmd.startsWith("/regression feature")) output.result = regressionFeature(cmd.replace(/^\/regression feature\s*/, ""))
+        const r = dispatchCommand(cmd)
+        if (r !== undefined) output.result = r
       }, "tui.command.execute")
     },
   }
+}
+
+function commandResultPath(): string {
+  return join(memoryDir, "command_result.txt")
+}
+
+// Współdzielony dispatch komend memory/context/regression → deterministyczny wynik.
+// async-tylko komendy (compact-now, ai triage) są pomijane w tym synchronicznym
+// wariancie i obsługiwane jedynie w tui.command.execute / przez model.
+function dispatchCommand(cmd: string): string | undefined {
+  if (cmd.startsWith("/memory status")) return memoryStatus()
+  if (cmd.startsWith("/memory show")) return memoryShow()
+  if (cmd.startsWith("/memory save")) {
+    const handoff = buildHandoff(lastSessionId, [])
+    writeActiveSession(handoff)
+    return "Handoff saved."
+  }
+  if (cmd.startsWith("/memory clear-session")) return memoryClearSession()
+  if (cmd.startsWith("/memory clear-project")) return memoryClearProject()
+  if (cmd.startsWith("/memory compact-status")) return memoryCompactStatus()
+  if (cmd.startsWith("/memory compact-reset")) return memoryCompactReset()
+  if (cmd.startsWith("/memory compact")) {
+    const handoff = buildHandoff(lastSessionId, [])
+    writeActiveSession(handoff)
+    return "Compact handoff created."
+  }
+  if (cmd.startsWith("/memory propose")) return memoryPropose()
+  if (cmd.startsWith("/memory commit")) return commitProposedFacts()
+  if (cmd.startsWith("/memory lesson")) return memoryLesson(cmd.replace(/^\/memory lesson\s*/, ""))
+  if (cmd.startsWith("/memory auto-refresh")) return memoryAutoRefresh()
+  if (cmd.startsWith("/memory auto")) return memoryAutoShow()
+  if (cmd.startsWith("/memory init")) return memoryInit(cmd.replace(/^\/memory init\s*/, ""))
+  if (cmd.startsWith("/memory test-history")) return memoryTestHistory()
+  if (cmd.startsWith("/memory ai status")) return aiStatusText()
+  if (cmd.startsWith("/memory ai triage")) return undefined // async
+  if (cmd.startsWith("/memory ai")) return aiStatusText()
+  if (cmd.startsWith("/memory tui")) return memoryTuiDump()
+  if (cmd.startsWith("/memory dashboard")) return "Dashboard TUI: użyj w trybie interaktywnym (route: memory-dashboard)"
+  if (cmd.startsWith("/context budget")) return contextBudget()
+  if (cmd.startsWith("/context artifacts")) return contextArtifacts()
+  if (cmd.startsWith("/regression last-good")) return regressionLastGood()
+  if (cmd.startsWith("/regression suspect")) return regressionSuspect()
+  if (cmd.startsWith("/regression revert")) return regressionRevert(cmd.replace(/^\/regression revert\s*/, ""))
+  if (cmd.startsWith("/regression feature")) return regressionFeature(cmd.replace(/^\/regression feature\s*/, ""))
+  return undefined
 }
 
 export default ProjectContextPlugin

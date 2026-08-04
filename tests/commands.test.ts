@@ -95,11 +95,7 @@ describe("plugin commands — /memory", () => {
     expect(after).toBe(before)
   })
 
-  // KNOWN BUG: /\b--force\b/ never matches "--force" because "-" is a non-word
-  // char, so \b before "--" doesn't exist. /memory init --force ALWAYS refuses
-  // to overwrite a non-trivial project-facts.md. Fix: use /(^|\s)--force\b/ or
-  // /--force/. After the fix, flip it.fails -> it.
-  it.fails("init --force: overwrites existing non-trivial facts (KNOWN BUG: \\b before --)", async () => {
+  it("init --force: overwrites existing non-trivial facts", async () => {
     h = await createHarness()
     h.writeMemoryFile("project-facts.md", "# project-facts.md\n\n# Architektura\n- old custom stack\n")
     const out = await h.runCommand("/memory init --force")
@@ -164,12 +160,7 @@ describe("plugin commands — /memory", () => {
     expect(h.listMemory()).toEqual(expect.arrayContaining(["cache", "artifacts", "index", "session-history"]))
   })
 
-  // KNOWN BUG: dispatchCommand checks `cmd.startsWith("/memory compact")`
-  // BEFORE "/memory compact-status" and "/memory compact-reset", so both
-  // subcommands are shadowed and instead create a handoff returning
-  // "Compact handoff created." Fix: move compact-status/compact-reset checks
-  // before the generic "/memory compact" branch (or use a stricter match).
-  it.fails("compact-status: prints compaction status block (KNOWN BUG: shadowed by /memory compact)", async () => {
+  it("compact-status: prints compaction status block", async () => {
     h = await createHarness()
     const out = await h.runCommand("/memory compact-status")
     expect(out).toContain("=== Context compaction ===")
@@ -177,7 +168,7 @@ describe("plugin commands — /memory", () => {
     expect(out).toMatch(/Limit:/)
   })
 
-  it.fails("compact-reset: resets suggestion flag (KNOWN BUG: shadowed by /memory compact)", async () => {
+  it("compact-reset: resets suggestion flag", async () => {
     h = await createHarness()
     const out = await h.runCommand("/memory compact-reset")
     expect(out).toMatch(/reset|zresetow/i)
