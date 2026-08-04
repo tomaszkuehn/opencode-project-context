@@ -543,6 +543,79 @@ function extractEnvironment(root: string): string[] {
     const fm = raw.match(/FROM\s+([^\s]+)/i)
     if (fm) out.push(`Container base: ${fm[1]}  (Dockerfile)`)
   }
+  // Host OS + WSL hint (deterministic, no shell call)
+  const hostOs = process.platform
+  const hostOsLabel = hostOs === "win32" ? "Windows" : hostOs === "linux" ? "Linux" : hostOs === "darwin" ? "macOS" : hostOs
+  out.push(`Host OS: ${hostOsLabel}  (process.platform=${hostOs})`)
+  if (hostOs === "linux" && existsSync("/proc/sys/fs/binfmt_misc/WSLInterop")) {
+    out.push("Runtime: WSL (binfmt WSLInterop wykryty)")
+  }
+  // WSL detection on Windows: sprawdz presence wsl.exe w PATH + skrypty *.sh obok *.ps1
+  if (hostOs === "win32") {
+    const hasSh = existsSync(join(root, "install.sh")) || existsSync(join(root, "scripts", "install.sh"))
+    const hasPs1 = existsSync(join(root, "install.ps1")) || existsSync(join(root, "scripts", "install.ps1"))
+    if (hasSh && hasPs1) out.push("Build env: cross-platform shell (WSL + PowerShell)  (*.sh + *.ps1)")
+    else if (hasSh) out.push("Build env: WSL/bash wymagany  (*.sh bez *.ps1)")
+  }
+  return out
+}
+
+// --- Target platform (CI matrix, desktop/mobile wrappers, tsconfig lib) --------
+function extractTargetPlatform(root: string): string[] {
+  const out: string[] = []
+  // GitHub Actions matrix.os / runs-on
+  const ghDir = join(root, ".github", "workflows")
+  if (existsSync(ghDir)) {
+    try {
+      const osSet = new Set<string>()
+      for (const f of readdirSync(ghDir)) {
+        if (!f.endsWith(".yml") && !f.endsWith(".yaml")) continue
+        const raw = readText(join(ghDir, f))
+        // runs-on: ubuntu-latest / matrix.os: [ubuntu-latest, windows-latest, macos-latest]
+        for (const m of raw.matchAll(/(?:runs-on|os):\s*\[?["'`]?([a-z]+-latest)["'`\]?,]?/gi)) {
+          if (m[1]) osSet.add(m[1])
+        }
+      }
+      if (osSet.size) out.push(`CI matrix: ${Array.from(osSet).join(", ")}  (.github/workflows)`)
+    } catch { /* ignore */ }
+  }
+  // Desktop/mobile wrappers
+  if (existsSync(join(root, "electron-builder.yml")) || existsSync(join(root, "electron-builder.json")) || existsSync(join(root, "electron-builder.config.js"))) {
+    out.push("Target: Electron desktop  (electron-builder)")
+  }
+  if (existsSync(join(root, "tauri.conf.json")) || existsSync(join(root, "src-tauri", "tauri.conf.json"))) {
+    out.push("Target: Tauri desktop  (tauri.conf.json)")
+  }
+  if (existsSync(join(root, "capacitor.config.ts")) || existsSync(join(root, "capacitor.config.json"))) {
+    out.push("Target: Capacitor mobile  (capacitor.config)")
+  }
+  if (existsSync(join(root, "expo.json")) || existsSync(join(root, "app.json"))) {
+    const aj = readJsonManifest(root, "app.json")
+    if (aj?.expo) out.push("Target: Expo/React Native mobile  (app.json expo)")
+  }
+  // package.json os/cpu constraints + bin hints
+  const pkg = readJsonManifest(root, "package.json")
+  if (pkg) {
+    if (Array.isArray(pkg.os) && pkg.os.length) out.push(`Target os: ${pkg.os.join(", ")}  (package.json os)`)
+    if (Array.isArray(pkg.cpu) && pkg.cpu.length) out.push(`Target cpu: ${pkg.cpu.join(", ")}  (package.json cpu)`)
+    if (pkg.main && /^dist\/(electron|tauri|desktop)/.test(pkg.main)) out.push(`Target: desktop  (package.json main=${pkg.main})`)
+  }
+  // tsconfig.json lib (browser vs node target)
+  const tscfg = join(root, "tsconfig.json")
+  if (existsSync(tscfg)) {
+    try {
+      const raw = readText(tscfg)
+      const libMatch = raw.match(/"lib"\s*:\s*\[([^\]]+)\]/)
+      if (libMatch) {
+        const libs = libMatch[1].replace(/["' ]/g, "").split(",").filter(Boolean)
+        const hasDom = libs.some((l) => l.toLowerCase().startsWith("dom"))
+        const hasNode = libs.some((l) => l.toLowerCase().includes("node"))
+        if (hasDom && hasNode) out.push("tsconfig lib: DOM+Node  (hybrid/browser+node)")
+        else if (hasDom) out.push("tsconfig lib: DOM  (browser target)")
+        else if (hasNode) out.push("tsconfig lib: Node  (node target)")
+      }
+    } catch { /* ignore */ }
+  }
   return out
 }
 
@@ -590,6 +663,7 @@ function buildAutoFacts(): string {
   const root = worktreePath || projectRoot || process.cwd()
   const cmds = extractBuildAndTestCommands(root)
   const env = extractEnvironment(root)
+  const platform = extractTargetPlatform(root)
   const arch = extractArchitecture(root)
   const out: string[] = []
   out.push("# project-facts.auto.md — generowane automatycznie przez plugin")
@@ -613,6 +687,11 @@ function buildAutoFacts(): string {
   if (env.length) {
     out.push("## Środowisko")
     for (const e of env) out.push(`- ${e}`)
+    out.push("")
+  }
+  if (platform.length) {
+    out.push("## Platforma docelowa")
+    for (const p of platform) out.push(`- ${p}`)
     out.push("")
   }
   return out.join("\n")
@@ -842,6 +921,41 @@ function buildProposedFacts(): string {
     out.push("")
   }
 
+  // Heurystyka trudnych problemów: ≥3 uruchomienia tego samego command, z czego
+  // przynajmniej jedno nieudane (exitCode!=0) i ostatnie udane (exitCode==0).
+  // Sugeruje, że problem rozwiązano po iteracjach — warte zapisania lekcji.
+  const byCmd: Record<string, TestRun[]> = {}
+  for (const t of testHistory) {
+    const key = t.command
+    if (!byCmd[key]) byCmd[key] = []
+    byCmd[key].push(t)
+  }
+  const hardProblems: string[] = []
+  for (const [cmd, runs] of Object.entries(byCmd)) {
+    if (runs.length < 3) continue
+    const hasFail = runs.some((r) => r.exitCode !== 0)
+    const lastOk = runs[runs.length - 1].exitCode === 0
+    if (!hasFail || !lastOk) continue
+    // zbierz unikalne failed test names z nieudanych runów
+    const failedNames = new Set<string>()
+    for (const r of runs) {
+      if (r.exitCode !== 0) for (const f of r.failed) failedNames.add(f)
+    }
+    const firstTs = runs[0].timestamp.slice(0, 10)
+    const lastTs = runs[runs.length - 1].timestamp.slice(0, 10)
+    const span = firstTs === lastTs ? firstTs : `${firstTs}..${lastTs}`
+    const failedBit = failedNames.size ? ` (failed: ${Array.from(failedNames).slice(0, 3).join(", ")})` : ""
+    hardProblems.push(`- ${cmd}: rozwiązano po ${runs.length} iteracjach [${span}]${failedBit}`)
+  }
+  if (hardProblems.length) {
+    added = true
+    out.push("## Trudne problemy (heurystyka: ≥3 iteracje build/test → sukces)")
+    out.push(...hardProblems)
+    out.push("")
+    out.push("> Jeśli któryś z tych problemów był nieoczywisty, rozważ: /memory lesson <krótki opis problem+rozwiązanie+why>")
+    out.push("")
+  }
+
   if (!added) {
     out.push("(brak danych — uruchom kilka sesji z buildem/testami i edycją plików, aby plugin zebrał statystyki)")
   }
@@ -857,6 +971,33 @@ function commitProposedFacts(): string {
   // clear the proposed buffer by resetting trace (keep history though)
   rmSync(proposedFactsPath(), { force: true })
   return "Propozycje dopisane do project-facts.md. Przejrzyj i edytuj ręcznie, aby zachować zwięzłość."
+}
+
+// --- /memory lesson: ręczne dopisywanie lekcji (trudne problemy, decisions) ---
+// Lekcje lądują w wersjonowanym project-facts.md w sekcji "## Lekcje".
+// Krótkie, z datą — dla przyszłych sesji, które natrafiają na podobny problem.
+function memoryLesson(text: string): string {
+  const t = (text || "").trim()
+  if (!t) return "Użycie: /memory lesson <opis lekcji>. Krótko: problem + rozwiązanie + dlaczego."
+  if (t.length > 600) return "Lekcja za długa (>600 znaków). Skróć do istotnego problem+rozwiązanie+why."
+  const existing = readText(factsPath())
+  const ts = new Date().toISOString().slice(0, 10)
+  const line = `- [${ts}] ${t}`
+  if (existing.includes("## Lekcje")) {
+    // dopisz pod istniejącą sekcją
+    const idx = existing.indexOf("## Lekcje")
+    const nextHeader = existing.indexOf("\n## ", idx + 1)
+    const insertAt = nextHeader === -1 ? existing.length : nextHeader
+    const before = existing.slice(0, insertAt).replace(/\n*$/, "\n")
+    const after = existing.slice(insertAt)
+    const merged = before + line + "\n" + (after.startsWith("\n") ? after : "\n" + after)
+    writeFileSync(factsPath(), merged, "utf8")
+  } else {
+    const sep = existing.endsWith("\n") ? "\n" : existing ? "\n\n" : ""
+    const header = existing ? "## Lekcje\n" : "# project-facts.md\n\n## Lekcje\n"
+    writeFileSync(factsPath(), existing + sep + header + line + "\n", "utf8")
+  }
+  return `Lekcja dopisana do project-facts.md (## Lekcje):\n${line}`
 }
 
 // ---------------------------------------------------------------------------
@@ -2242,6 +2383,7 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
         }
         else if (cmd.startsWith("/memory propose")) output.result = memoryPropose()
         else if (cmd.startsWith("/memory commit")) output.result = commitProposedFacts()
+        else if (cmd.startsWith("/memory lesson")) output.result = memoryLesson(cmd.replace(/^\/memory lesson\s*/, ""))
         else if (cmd.startsWith("/memory auto-refresh")) output.result = memoryAutoRefresh()
         else if (cmd.startsWith("/memory auto")) output.result = memoryAutoShow()
         else if (cmd.startsWith("/memory init")) output.result = memoryInit(cmd.replace(/^\/memory init\s*/, ""))

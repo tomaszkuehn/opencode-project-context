@@ -29,6 +29,10 @@ Plugin zbudowany według specyfikacji `PLUGIN.md`.
   - [4. Wykrywanie i cofanie regresji](#4-wykrywanie-i-cofanie-regresji-regression)
   - [5. Detekcja rozmiaru kontekstu i kompaktacja](#5-detekcja-rozmiaru-kontekstu-i-kompaktacja-compactmode)
   - [6. Audyt regresji wielomodelowy — IJFW cross_audit (Trident)](#6-audyt-regresji-wielomodelowy--ijfw-cross_audit-trident)
+  - [7. Lekcje projektu (`/memory lesson`)](#7-lekcje-projektu--memory-lesson)
+  - [8. Heurystyka trudnych problemów](#8-heurystyka-trudnych-problemów)
+  - [9. Ekstraktory platformy docelowej](#9-ekstraktory-platformy-docelowej)
+- [Przewodnik: 4 scenariusze krok po kroku](#przewodnik-4-scenariusze-krok-po-kroku)
 - [Metryki i diagnostyka](#metryki-i-diagnostyka)
 - [Rozwiązywanie problemów](#rozwiązywanie-problemów)
 
@@ -509,6 +513,21 @@ Przykład wyjścia:
     Build complete
 ```
 
+#### `/memory lesson <opis>`
+
+Ręcznie dopisuje lekcję do wersjonowanego `project-facts.md` (sekcja `## Lekcje`, z datą ISO). Służy do zapisywania **trudnych problemów rozwiązanych po wielu iteracjach**, nietrywialnych decyzji i pułapek, na które agent może natrafić ponownie w przyszłej sesji. Lekcje są widoczne dla agenta na starcie każdej sesji (w ramach `project-facts`).
+
+Walidacja: tekst niepusty, do 600 znaków (skróć do: problem + rozwiązanie + dlaczego). Jeśli sekcja `## Lekcje` nie istnieje w `project-facts.md`, jest tworzona; jeśli istnieje, lekcja jest dopisywana pod nią.
+
+```
+/memory lesson SDK TUI: slots.register kontrakt to {slots:{name:(ctx,props)=>JSX}}, nie {name,render} — zajęło 3 iteracje
+/memory lesson regressionRevert: git checkout <sha> -- <file> w trybie bezpiecznym wymaga confirm — bez tego silent no-op
+```
+
+Lekcje można potem swobodnie edytować w `project-facts.md` (sekcja wersjonowana w Git). Są wstrzykiwane razem z auto-faktami w ramach budżetu `maxProjectMemoryTokens`.
+
+> **Wskazówka:** Jeśli problem był naprawdę trudny (≥3 iteracje build/test, zakończone sukcesem), komenda `/memory propose` automatycznie go wykryje i podpowie dodanie lekcji — patrz [Heurystyka trudnych problemów](#8-heurystyka-trudnych-problemów).
+
 #### `/memory tui`
 
 Tekstowy odpowiednik widoku TUI — działa w trybie CLI (non-interactive), gdzie sloty TUI nie są renderowane. Zwraca 5-linijkowy blok z tymi samymi danymi co pasek TUI: oszczędność tokenów, rozmiar na dysku vs limit 200 MB, budżet kontekstu vs próg kompaktacji, stan sesji (handoff, modified, decisions, blockers, HEAD, dirty, LSP, last-good), limity cache (dedup, test-history). Ostrzeżenia (`⚠`) markują przekroczenia: dysk ≥90%, kontekst ≥ próg kompaktacji.
@@ -861,9 +880,10 @@ Komenda `/memory propose` generuje propozycje sekcji `# Komendy`, `# Hotspoty`, 
 
 - **Architekturę** — stack po manifestach (`package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `CMakeLists.txt`, `pom.xml`, `build.gradle`) i dominujących rozszerzeniach; główne katalogi (do `factsAutoGlobDepth`, domyślnie 3)
 - **Komendy** — `package.json` scripts, `Makefile` targets, CMake (`cmake --build`, `ctest`), Cargo, Go, dotnet; sekcje Build/Test/Formatowanie/Lint
-- **Środowisko** — `.nvmrc`, `.node-version`, `.python-version`, `.ruby-version`, `.tool-versions`, `mise.toml`, `Dockerfile` (FROM)
+- **Środowisko** — `.nvmrc`, `.node-version`, `.python-version`, `.ruby-version`, `.tool-versions`, `mise.toml`, `Dockerfile` (FROM), **Host OS** (`process.platform`), **WSL detection** (Linux: `/proc/sys/fs/binfmt_misc/WSLInterop`; Windows: presence `*.sh` + `*.ps1` obok siebie → "cross-platform shell", sam `*.sh` → "WSL/bash wymagany")
+- **Platforma docelowa** (nowe) — GitHub Actions `matrix.os`/`runs-on`, Electron (`electron-builder.*`), Tauri (`tauri.conf.json`), Capacitor (`capacitor.config.*`), Expo (`app.json` expo), `package.json` `os`/`cpu`/`main`, `tsconfig.json` `lib` (DOM/Node/hybrid)
 
-Plik `.auto.md` jest dodawany do `.gitignore` (regenerowany, nie wersjonowany). `project-facts.md` pozostaje dla faktów ręcznych (ryzyka, konwencje zespołu) i jest wersjonowany. Wstrzykiwany kontekst to połączenie obu, ucięte do budżetu. Komendy `/memory auto` i `/memory auto-refresh` pozwalają podejrzeć i ręcznie odświeżyć auto-fakty. Konfiguracja: `autoExtractFacts: false` wyłącza funkcję; `autoExtractOnEvents: []` wyłącza auto-regenerację, zostawiając tylko `/memory auto-refresh`.
+Plik `.auto.md` jest dodawany do `.gitignore` (regenerowany, nie wersjonowany). `project-facts.md` pozostaje dla faktów ręcznych (ryzyka, konwencje zespołu, lekcje) i jest wersjonowany. Wstrzykiwany kontekst to połączenie obu, ucięte do budżetu. Komendy `/memory auto` i `/memory auto-refresh` pozwalają podejrzeć i ręcznie odświeżyć auto-fakty. Konfiguracja: `autoExtractFacts: false` wyłącza funkcję; `autoExtractOnEvents: []` wyłącza auto-regenerację, zostawiając tylko `/memory auto-refresh`.
 
 ### 3. Pamięć stanu testów w czasie (`test-history.json`)
 
@@ -1037,6 +1057,375 @@ Zwraca: `{ verdict, iterations, findings, divergence?, stalled? }`. `verdict` �
 - `/regression` — gdy masz padający test i chcesz lokalnie wskazać winny plik bez kosztu LLM
 - `cross_audit` — gdy testów brak, są flaky, lub regresja jest semantyczna (UX, API, wydajność); jako gate na PR przed mergem
 - Można łączyć: najpierw `cross_audit` na PR (wykrycie), a jeśli werdykt FAIL i są testy — `/regression suspect` dla dokładnej lokalizacji
+
+---
+
+### 7. Lekcje projektu (`/memory lesson`)
+
+Wersjonowany `project-facts.md` ma teraz dedykowaną sekcję `## Lekcje` — miejsce na trudne problemy rozwiązane po wielu iteracjach, nietrywialne decyzje i pułapki, na które agent może natrafić ponownie. Komenda `/memory lesson <text>` dopisuje wpis z datą ISO (automatycznie tworzy sekcję, jeśli nie istnieje). Lekcje są wstrzykiwane agentowi na starcie każdej sesji razem z auto-faktami, w ramach budżetu `maxProjectMemoryTokens`.
+
+Szczegóły w rozdziale [Dostępne komendy → `/memory lesson`](#memory-lesson-opis).
+
+### 8. Heurystyka trudnych problemów
+
+Komenda `/memory propose` automatycznie wykrywa **trudne problemy** — sytuacje, w których dana komenda build/test była uruchamiana ≥3 razy, z czego przynajmniej raz nieudanie (exit≠0) i ostatnie uruchomienie udane (exit=0). Taki wzorzec oznacza, że problem rozwiązano po iteracjach i jest warte zapisania lekcji, by przyszłe sesje nie musiały odkrywać tego od zera.
+
+Generowana sekcja `## Trudne problemy (heurystyka: ≥3 iteracje → sukces)`:
+
+```
+- pytest -q tests/test_retry.py: rozwiązano po 4 iteracjach [2026-08-04..2026-08-04] (failed: tests/test_retry.py::test_retry_delay, test_retry_backoff)
+- npm run build: rozwiązano po 3 iteracjach [2026-08-04]
+> Jeśli któryś z tych problemów był nieoczywisty, rozważ: /memory lesson <krótki opis problem+rozwiązanie+why>
+```
+
+Heurystyka czyta `test-history.json` (zlicza uruchomienia per command, sprawdza exitCode). Jest deterministyczna — nie wymaga LLM. Propozycje zatwierdzane przez `/memory commit` lub ręcznie skopiowane do lekcji.
+
+### 9. Ekstraktory platformy docelowej
+
+Rozszerzenie `extractTargetPlatform` czyta repozytorium i wykrywa platformę docelową, na której projekt ma działać — to inne niż środowisko builda (host OS, WSL), bo skupia się na target runtime:
+
+| Źródło | Wykrywanie |
+| ------- | ---------- |
+| `.github/workflows/*.yml` | `runs-on:` / `matrix.os:` → CI matrix (np. `ubuntu-latest, windows-latest`) |
+| `electron-builder.*` | Electron desktop |
+| `tauri.conf.json` | Tauri desktop |
+| `capacitor.config.*` | Capacitor mobile |
+| `app.json` (expo) | Expo/React Native mobile |
+| `package.json` `os`/`cpu` | Target os/cpu constraints |
+| `package.json` `main` | `dist/electron*` / `dist/tauri*` → desktop |
+| `tsconfig.json` `lib` | `DOM` → browser, `Node` → node, oba → hybrid |
+
+Wyjście trafia do sekcji `## Platforma docelowa` w `project-facts.auto.md`, regenerowanej automatycznie. Nie wymaga edycji ręcznej — deterministyczne.
+
+```markdown
+## Platforma docelowa
+- CI matrix: ubuntu-latest, windows-latest  (.github/workflows)
+- Target: Electron desktop  (electron-builder)
+- tsconfig lib: DOM+Node  (hybrid/browser+node)
+```
+
+---
+
+## Przewodnik: 4 scenariusze krok po kroku
+
+Część dokumentacji napisana prostym językiem, jak dla kogoś, kto pierwszy raz widzi ten plugin. Każdy scenariusz to konkretna sytuacja + dokładne kroki.
+
+### Scenariusz 1: Inicjalizacja środowiska po instalacji pluginu
+
+**Sytuacja:** Zainstalowałeś plugin (`bash install.sh`), zrestartowałeś OpenCode, wpisujesz pierwszą komendę. Chcesz wiedzieć, co się dzieje i czy plugin działa.
+
+**Co się dzieje automatycznie (nie musisz nic robić):**
+
+1. **Na starcie sesji (`session.created`)** plugin:
+   - czyta repozytorium i buduje `project-facts.auto.md` (Architektura, Komendy, Środowisko, Platforma docelowa)
+   - łączy auto-fakty + ręczne `project-facts.md` (jeśli istnieje) i wstrzykuje agentowi jako `PROJECT MEMORY`
+   - czyta `active-session.json` (handoff z poprzedniej sesji, jeśli był)
+   - inicjalizuje metryki i dedup-cache
+
+2. **Podczas sesji** plugin w tle:
+   - skraca wyniki narzędzi (testy, buildy, diffy, grepy) do limitów z konfiguracji
+   - deduplikuje powtórzone odczyty tego samego pliku (oszczędność tokenów)
+   - zapisuje pełne wyniki jako artefakty (skrócone wersje + link `artifact://<id>`)
+   - zapisuje każdy uruchom testu/build do `test-history.json` (z git HEAD SHA)
+   - śledzi rozmiar kontekstu i pokazuje toast gdy ≥80% limitu
+
+3. **Na koniec sesji (`session.idle`/`session.compacted`)** plugin:
+   - regeneruje `project-facts.auto.md` (odświeżone po zmianach)
+   - zapisuje handoff do `active-session.json` (cel, status, edytowane pliki, decyzje, blokery)
+   - agreguje statystyki do `session-trace.json` (komendy, hotspoty, blokery — między sesjami)
+
+**Jak zweryfikować, że działa:**
+
+```text
+/memory status
+```
+
+Powinieneś zobaczyć:
+- `Worktree: /ścieżka/do/repo`
+- `Project facts: XXX tokens` (auto-fakty + ręczne)
+- `Metrics: N tool calls, X% reduction`
+- `Context: ... / 200000 tokens (mode=suggest)`
+
+Na dole ekranu TUI powinien pojawić się pasek `memory: tools:N · saved:~Xk tok · ...` (odświeżany co 3 s).
+
+**Jeśli pasek TUI się nie pojawia:** sprawdź czy `node_modules/@opentui/solid` istnieje (TUI wymaga bibliotek runtime), czy `.opencode/tui.json` ma wpis `memory-tui.tsx`, i zrestartuj OpenCode. Pełna diagnoza w rozdziale [Rozwiązywanie problemów](#tui-plugin-pasek-statusu-na-dole-ekranu).
+
+**Jeśli chcesz zobaczyć dokładnie co agent dostał na starcie:**
+
+```text
+/memory show
+```
+
+Trzy sekcje: `project-facts.md`, `active-session.json`, wstrzyknięty kontekst. Przydatne przy debugowaniu "dlaczego agent zachowuje się inaczej niż wczoraj".
+
+**Pierwsze kroki po instalacji:**
+
+1. `bash install.sh` — instalacja
+2. Zrestartuj OpenCode
+3. `/memory status` — weryfikacja
+4. `/memory init` — opcjonalnie, tworzy szablon `project-facts.md` z auto-wykrytymi podpowiedziami (Architektura, Komendy, Środowisko wypełnione; Konwencje/Ryzyka puste z markerem `(uzupełnij)`)
+5. Zedytuj `project-facts.md` — uzupełnij Konwencje (styl kodu, reguły zespołu) i Ryzyka (znane problemy). Ten plik jest wersjonowany w Git.
+6. Pracuj normalnie — plugin zbiera statystyki w tle
+
+### Scenariusz 2: Rozwiązanie problemu z popsuciem innych funkcji przy poprawianiu kodu
+
+**Sytuacja:** Agent (model) dostał zadanie "napraw moduł A". Poprawił A, ale przy okazji dotknął B/C/D i coś zepsuł. Testy padają. Chcesz wiedzieć, który plik jest winny i jak go cofnąć bez psucia naprawy A.
+
+Plugin oferuje dwie ścieżki: lokalną (`/regression`, darmowa) i wielomodelową (`cross_audit`, kosztuje LLM API).
+
+**Ścieżka A — lokalna, przez `/regression` (gdy masz padający test):**
+
+1. **Uruchom testy** (cały suite, nie tylko testy modułu A):
+
+   ```text
+   $ pytest -q
+   ```
+
+   Plugin zapisuje wpis do `test-history.json`: timestamp, exitCode=1, failed test names, git HEAD SHA.
+
+2. **Zidentyfikuj okno regresji:**
+
+   ```text
+   /regression last-good
+   ```
+
+   Wyjście pokazuje ostatni zielony (exit=0) i pierwszy czerwony (exit≠0) wraz z SHA i nazwą padającego testu. Różnica między SHA = okno regresji.
+
+3. **Znajdź winowajcę:**
+
+   ```text
+   /regression suspect
+   ```
+
+   Scala podejrzane pliki z 3 źródeł:
+   - stan roboczy `git status` (waga 100)
+   - `git diff --name-only` między SHA last-good a first-red (waga 50)
+   - `session-trace.json` — najczęściej edytowane pliki (waga = licznik edycji)
+   
+   Sortuje wg prawdopodobieństwa winy. Nie modyfikuje żadnych plików.
+
+4. **Cofnij winny plik do wersji last-good:**
+
+   ```text
+   /regression revert src/radio/retry.c
+   ```
+
+   W trybie bezpiecznym (`regressionSafeRevertOnly: true`, domyślnie) plugin prosi o potwierdzenie:
+
+   ```text
+   /regression revert confirm src/radio/retry.c
+   ```
+
+   Wykonuje `git checkout <last-good-sha> -- src/radio/retry.c`. To nadpisuje tylko ten jeden plik, nie psuje naprawy A. Można cofnąć przez `git checkout HEAD -- src/radio/retry.c` lub `git restore`.
+
+5. **Uruchom testy ponownie**, by potwierdzić, że cofnięcie pomogło.
+
+6. **Zapisz lekcję** (jeśli problem był nietrywialny):
+
+   ```text
+   /memory lesson Retry backoff: nie ruszać src/radio/backoff.c przy naprawie retry.c — backoff ma własny invariant, dotknięcie go łamie test_retry_delay
+   ```
+
+**Ścieżka B — wielomodelowa, przez `cross_audit` (gdy testów brak lub są flaky):**
+
+1. Agent commituje zmianę (po naprawie A).
+2. Uruchom audyt na zakresie commitu:
+
+   ```json
+   {
+     "commitRange": "HEAD~1..HEAD",
+     "lenses": ["codex", "gemini", "claude"],
+     "autoFix": false
+   }
+   ```
+
+3. Trzy modele równolegle czytają diff i oceniają niezależnie, czy zmiana nie psuje niczego poza intencją (UX, API, semantyka — rzeczy, których test nie pokryje).
+4. Werdykt:
+   - `PASS` — zmiana czysta
+   - `CONDITIONAL` — są findings MEDIUM/LOW do rozpatrzenia
+   - `FAIL` — 2+ modele zgodne co do HIGH; regresja potwierdzona
+   - `consensus_failed` — modele się rozchodzą, wymaga człowieka
+5. Jeśli `FAIL`, uruchom ponownie z `autoFix: true` — plugin automatycznie poprawi HIGH findings (na które zgodziły się 2+ modele), jako revertowalne commity.
+6. Przejrzyj commity, uruchom testy, uruchom audyt ponownie by potwierdzić `PASS`.
+
+**Kiedy której ścieżki:**
+
+- `/regression` — masz padający test, chcesz wskazać winny plik lokalnie (zero kosztu LLM)
+- `cross_audit` — testów brak, są flaky, lub regresja jest semantyczna; jako gate na PR przed mergem
+- Można łączyć: `cross_audit` (wykrycie) → `/regression suspect` (dokładna lokalizacja) → `/regression revert` (cofnięcie)
+
+### Scenariusz 3: Nawigowanie poprzez poprzednie wersje
+
+**Sytuacja:** Pracowałeś nad feature przez kilka sesji. Teraz chcesz wrócić do stanu sprzed tygodnia, albo zobaczyć, jak wyglądał kod zanim wprowadzono regresję. Plugin zapamiętuje historię testów z git HEAD SHA — dzięki temu możesz precyzyjnie wskazać wersję, do której chcesz się cofnąć.
+
+**Sprawdź historię testów:**
+
+```text
+/memory test-history
+```
+
+Pokazuje najnowsze uruchomienia (najnowsze na górze, domyślnie 15):
+
+```
+[2026-08-04T15:12:33Z] FAIL(1)  pytest -q tests/test_retry.py
+    1 failed, 14 passed
+    failed: tests/test_retry.py::test_retry_delay
+[2026-08-04T14:55:01Z] OK  idf.py build
+    Build complete
+[2026-08-04T11:00:00Z] OK  pytest -q tests/test_retry.py
+    15 passed
+```
+
+Każdy wpis ma `HEAD: <sha>` — git commit w momencie uruchomienia. To pozwala powiązać "ten test przechodził przy commit X, a pada przy commit Y".
+
+**Znajdź ostatni dobry commit:**
+
+```text
+/regression last-good
+```
+
+Pokazuje:
+- `Last good: <timestamp>  exit=0  HEAD: <sha>`  ← do tego commita chcesz się cofnąć
+- `First red: <timestamp>  exit=1  HEAD: <sha>`  ← ten commit zepsuł test
+
+**Cofnij konkretny plik do wersji z last-good** (nie cały commit, tylko winny plik):
+
+```text
+/regression revert src/radio/retry.c
+/regression revert confirm src/radio/retry.c
+```
+
+Wykonuje `git checkout <last-good-sha> -- src/radio/retry.c`. Bezpieczne — nadpisuje tylko ten jeden plik. Pozostałe zmiany (np. naprawa A) zostają nietknięte.
+
+**Cofnij wszystkie podejrzane pliki naraz:**
+
+```text
+/regression revert all
+/regression revert all confirm
+```
+
+**Zachowaj bieżący stan w stash (odwracalne):**
+
+```text
+/regression revert stash
+```
+
+Wykonuje `git stash` — możesz potem przywrócić przez `git stash pop`.
+
+**Ręcznie cofnąć przez git** (poza pluginem):
+
+Jeśli znasz SHA z `/memory test-history` lub `/regression last-good`, możesz użyć standardowego gita:
+
+```text
+git checkout <sha> -- <plik>      # cofnij jeden plik
+git stash                         # schowaj wszystko
+git stash pop                     # przywróć
+git log --oneline                 # zobacz historię commitów
+git show <sha>                    # zobacz zmiany w commicie
+```
+
+**Bezpieczeństwo:** Plugin nigdy nie wykonuje `git reset --hard` ani `git clean`. Wszystkie operacje są odwracalne:
+- `checkout <sha> -- <file>` cofa przez `git checkout HEAD -- <file>` lub `git restore`
+- `stash` cofa przez `git stash pop`
+
+### Scenariusz 4: Jak odczytywać informacje podane w TUI
+
+**Sytuacja:** Na dole ekranu OpenCode pojawił się pasek pluginu `memory: tools:N · saved:~Xk tok · ...`. Chcesz rozumieć, co oznaczają poszczególne wartości i jak reagować na ostrzeżenia.
+
+**Pasek statusu (slot `app_bottom`, odświeżany co 3 s):**
+
+Trzy linie w trybie TUI (jedna w CLI):
+
+```
+memory: tools:18 · saved:~65k tok · 85% reduc. · dedup:2 · art:1 (3.0KB)
+disk: 349KB / 200.0MB (0%) · art 308KB · cache 34KB
+ctx: 12.0k/200.0k tok (6%, compact@80%) · facts: 480/1.5k (32%) [suggest]
+```
+
+**Linia 1 — oszczędność tokenów:**
+
+| Fragment | Znaczenie | Jak interpretować |
+| -------- | --------- | ----------------- |
+| `memory:` | Prefiks (kolor: primary/akcent) | Pasek pluginu |
+| `tools:N` | Liczba wywołań narzędzi w sesji | Im więcej, tym aktywniej pracujesz |
+| `saved:~Xk tok` | Szacunek zaoszczędzonych tokenów (filtracja + dedup) | Koloryzacja: wartość na akcent/success — im więcej, tym lepiej |
+| `X% reduc.` | Procent redukcji znaków w wynikach narzędzi | ≥50% zielony (success), ≥20% żółty (warning), <20% szary |
+| `dedup:N` | Liczba deduplikowanych odczytów (gdy N>0) | Dobrze — nie wysyłamy tego samego contentu ponownie |
+| `art:N (size)` | Liczba artefaktów i ich łączny rozmiar (gdy N>0) | Pełne wyniki zapisane na dysku, skrócone wysłane do modelu |
+
+Jeśli widzisz `memory: idle` — brak wywołań narzędzi w tej sesji (np. zaraz po starcie).
+
+**Linia 2 — dysk:**
+
+| Fragment | Znaczenie | Jak interpretować |
+| -------- | --------- | ----------------- |
+| `disk: X / 200.0MB (Y%)` | Rozmiar katalogu `.opencode/memory/` vs limit 200 MB | Koloryzacja: ≥90% czerwony (error), ≥70% żółty (warning), <70% szary |
+| `art X` | Rozmiar artefaktów (pełne wyniki narzędzi) | >10MB żółty — rozważ `/memory clear-session` |
+| `cache X` | Rozmiar cache (dedup, test-history, metrics) | >50MB żółty — rozważ `/memory clear-session` |
+
+Jeśli `disk` ≥90% — toast error na dole ekranu: `Pamięć pluginu 180MB (90%) — /memory clear-session`. Uruchom `/memory clear-session` by wyczyścić nietrwałe dane (zachowuje `project-facts.md` i artefakty).
+
+**Linia 3 — kontekst + fakty:**
+
+| Fragment | Znaczenie | Jak interpretować |
+| -------- | --------- | ----------------- |
+| `ctx: X/Y tok (Z%, compact@80%)` | Bieżący rozmiar kontekstu vs limit (autodetekcja z modelu lub 200k fallback); próg kompaktacji 80% | ≥80% — toast warning: `Kontekst 82% — /memory compact-now` |
+| `facts: X/1.5k (Z%)` | Zużycie budżetu `maxProjectMemoryTokens` (auto + ręczne fakty) | >100% → plugin ucina kontekst + warning; rozważ skrócenie `project-facts.md` |
+| `[suggest]` | Tryb kompaktacji: `suggest`/`confirm`/`auto`/`off` | `suggest` = toast + status; `confirm` = toast + dialog; `auto` = OpenCode kompaktuje sam; `off` = wyłączone |
+
+**Dodatkowe w pasku (gdy są dane):**
+
+Czwarta linia pojawia się gdy jest handoff lub zmiany w repo:
+
+```
+handoff: 12m · mod:3 · dec:0 · blk:0 · HEAD:abc12345 (dirty:2) · lsp:3err · last-good:abc12345
+```
+
+| Fragment | Znaczenie |
+| -------- | --------- |
+| `handoff: 12m` | Czas od ostatniego handoffu (`active-session.json`) |
+| `mod:3` | Liczba zmodyfikowanych plików w sesji |
+| `dec:0` | Liczba decyzji zapisanych w handoff |
+| `blk:0` | Liczba blokerów w handoff |
+| `HEAD:abc12345` | Bieżący git HEAD SHA (7 znaków) |
+| `dirty:2` | Liczba plików zmienionych w `git status` |
+| `lsp:3err` | Liczba błędów LSP (gdy >0) |
+| `last-good:abc12345` | SHA ostatniego udanego testu (dla `/regression`) |
+
+Piąta linia — limity cache:
+
+```
+dedup cache: 127/500 · tests: 14/50
+```
+
+| Fragment | Znaczenie |
+| -------- | --------- |
+| `dedup cache: 127/500` | Wpisy w LRU dedup-cache vs `maxDedupCacheEntries` |
+| `tests: 14/50` | Wpisy w `test-history.json` vs `maxTestHistoryEntries` |
+
+**Powiadomienia TUI (toast/dialog):**
+
+Plugin automatycznie pokazuje:
+
+| Typ | Kiedy | Co zrobić |
+| --- | ----- | --------- |
+| Toast warning | kontekst ≥ próg kompaktacji (mode=suggest) | `/memory compact-now` lub natywna komenda `/compact` |
+| Dialog confirm | kontekst ≥ próg (mode=confirm) | Potwierdź `/memory compact-now` lub odłóż `/memory compact-reset` |
+| Toast error | dysk ≥ 90% limitu 200 MB | `/memory clear-session` |
+
+Sprawdzanie co 5 s, deduplikacja (toast nie powtarza się dopóki warunek nie zniknie i nie wróci).
+
+**Pełny dashboard (route `memory-dashboard`):**
+
+W trybie interaktywnym możesz przejść do pełnoekranowego dashboardu przez `api.route.navigate("memory-dashboard")` lub toast przy przekroczeniu progu. Pokazuje 7 sekcji: oszczędność tokenów, dysk, budżet kontekstu, sesja (goal/status/blokery/błędy LSP), cache, historia testów (10 ostatnich), artefakty (10 największych). Odświeżanie co 3 s.
+
+**Sidebar enrichment:**
+
+W slocie `sidebar_content` plugin dokłada blok z aktualnymi blokerami i błędami LSP (z `active-session.json`), jeśli jakieś są. Odświeżanie co 5 s. Skrócone do 60 znaków, max 3 pozycje na kategorię.
+
+**CLI fallback (`/memory tui`):**
+
+W trybie CLI (non-interactive, bez renderowania slotów) ten sam widok jest dostępny przez komendę `/memory tui` — zwraca 5-linijkowy blok z tymi samymi danymi. Przydatne w skryptach lub gdy TUI nie jest dostępne.
 
 ---
 
