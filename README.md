@@ -599,7 +599,7 @@ W trybie TUI (interaktywnym) ten sam widok jest odświeżany na żywo co 3 s w p
 
 #### `/memory dashboard`
 
-Pełnoekranowy dashboard TUI — własny route `memory-dashboard` z 7 sekcjami: oszczędność tokenów, dysk, budżet kontekstu, sesja (goal/status/blokery/błędy LSP), cache, historia testów (10 ostatnich), artefakty (10 największych). Odświeżanie co 3 s. Dostępny w trybie interaktywnym przez `api.route.navigate("memory-dashboard")` lub toast przy przekroczeniu progu.
+Pełnoekranowy dashboard TUI — własny route `memory-dashboard` z 8 sekcjami: oszczędność tokenów, dysk, budżet kontekstu, sesja (goal/status/blokery/błędy LSP), cache, **AI module** (model, liczniki wołań, ostatni błąd), historia testów (10 ostatnich), artefakty (10 największych). Odświeżanie co 3 s. Dostępny w trybie interaktywnym przez `api.route.navigate("memory-dashboard")` lub toast przy przekroczeniu progu.
 
 ### Powiadomienia TUI (toast + dialog)
 
@@ -1514,6 +1514,19 @@ dedup cache: 127/500 · tests: 14/50
 | `dedup cache: 127/500` | Wpisy w LRU dedup-cache vs `maxDedupCacheEntries` |
 | `tests: 14/50` | Wpisy w `test-history.json` vs `maxTestHistoryEntries` |
 
+Szósta linia pojawia się tylko gdy moduł AI jest włączony (`ai.enabled: true`):
+
+```
+ai: openai-compatible/gpt-4o-mini · 3/3 ok · 1240ms
+```
+
+| Fragment | Znaczenie | Jak interpretować |
+| -------- | --------- | ----------------- |
+| `ai: provider/model` | Włączony model AI (Opcja A) | Tani model, niezależny od modelu kodującego |
+| `N/M ok` | Sukcesy/wołania AI | Zielony: wszystko OK; żółty: częściowe porażki; czerwony: same porażki → fallback deterministyczny |
+| `Xms` | Czas ostatniego wołania | Diagnostyka opóźnienia |
+| `err: ...` | Ostatni błąd (gdy porażki >0) | Sprawdź `.opencode/memory/plugin-ai.log` i `/memory ai status` |
+
 **Powiadomienia TUI (toast/dialog):**
 
 Plugin automatycznie pokazuje:
@@ -1528,7 +1541,7 @@ Sprawdzanie co 5 s, deduplikacja (toast nie powtarza się dopóki warunek nie zn
 
 **Pełny dashboard (route `memory-dashboard`):**
 
-W trybie interaktywnym możesz przejść do pełnoekranowego dashboardu przez `api.route.navigate("memory-dashboard")` lub toast przy przekroczeniu progu. Pokazuje 7 sekcji: oszczędność tokenów, dysk, budżet kontekstu, sesja (goal/status/blokery/błędy LSP), cache, historia testów (10 ostatnich), artefakty (10 największych). Odświeżanie co 3 s.
+W trybie interaktywnym możesz przejść do pełnoekranowego dashboardu przez `api.route.navigate("memory-dashboard")` lub toast przy przekroczeniu progu. Pokazuje 8 sekcji: oszczędność tokenów, dysk, budżet kontekstu, sesja (goal/status/blokery/błędy LSP), cache, **AI module** (model, liczniki wołań/sukcesów/porażek, ostatni błąd), historia testów (10 ostatnich), artefakty (10 największych). Odświeżanie co 3 s.
 
 **Sidebar enrichment:**
 

@@ -53,6 +53,15 @@ type Metrics = {
   revertsCount?: number
   factsTokens?: number
   factsMaxTokens?: number
+  // --- AI (Opcja A) ---
+  aiEnabled?: boolean
+  aiProvider?: string
+  aiModel?: string
+  aiCalls?: number
+  aiSuccesses?: number
+  aiFailures?: number
+  aiLastCallMs?: number
+  aiLastError?: string
 }
 
 type ActiveSession = {
@@ -232,7 +241,7 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
   )
 
   return (
-    <box flexDirection="column" padding={1}>
+    <box flexDirection="column" border={true} borderStyle="rounded" borderColor={t.textMuted} padding={0} paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1}>
       {/* Header */}
       <box flexDirection="row">
         <text fg={t.primary} attributes={1}>memory dashboard</text>
@@ -337,6 +346,31 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
         })()}
       </box>
 
+      {/* --- Section 5b: AI module --- */}
+      <box flexDirection="column" marginTop={1}>
+        {sectionTitle("AI module (Opcja A)")}
+        {(() => {
+          const mm = m()
+          const on = mm?.aiEnabled === true
+          if (!on) return <text fg={t.textMuted}>  wyłączone (deterministyczne ekstraktory działają)</text>
+          const prov = mm?.aiProvider ?? "?"
+          const model = mm?.aiModel ?? "?"
+          const calls = mm?.aiCalls ?? 0
+          const ok = mm?.aiSuccesses ?? 0
+          const fail = mm?.aiFailures ?? 0
+          const ms = mm?.aiLastCallMs ?? 0
+          const err = mm?.aiLastError ?? ""
+          const statusColor = fail > 0 && ok === 0 ? t.error : fail > 0 ? t.warning : t.success
+          return (
+            <box flexDirection="column">
+              <text fg={t.text}>  model: <text fg={t.accent}>{prov}/{model}</text></text>
+              <text fg={t.text}>  wołania: <text fg={statusColor}>{ok}/{calls} ok</text>{fail > 0 ? <text fg={t.warning}> ({fail} porażek)</text> : null}{ms > 0 ? <text fg={t.textMuted}> · {ms}ms</text> : null}</text>
+              {err && fail > 0 ? <text fg={t.error}>  błąd: {err.slice(0, 100)}</text> : null}
+            </box>
+          )
+        })()}
+      </box>
+
       {/* --- Section 6: Test history --- */}
       <box flexDirection="column" marginTop={1}>
         {sectionTitle("Historia testów (10 ostatnich)")}
@@ -423,7 +457,7 @@ function setupSidebar(api: TuiPluginApi, worktree: string): void {
         if (blockers.length === 0 && lsp.length === 0) return null
 
         return (
-          <box flexDirection="column" padding={0}>
+          <box flexDirection="column" border={true} borderStyle="rounded" borderColor={t.textMuted} padding={0} paddingLeft={1} paddingRight={1}>
             {blockers.length > 0 ? (
               <box flexDirection="column">
                 <text fg={t.warning} attributes={1}>blokery ({blockers.length})</text>
@@ -496,7 +530,7 @@ const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
 
         if (!m || !m.toolCalls) {
           return (
-            <box flexDirection="column" flexShrink={0}>
+            <box flexDirection="column" flexShrink={0} border={true} borderStyle="rounded" borderColor={t.textMuted} padding={0} paddingLeft={1} paddingRight={1}>
               <text fg={t.primary}>memory: </text><text fg={t.textMuted}>idle</text>
             </box>
           )
@@ -605,13 +639,42 @@ const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
         line5Parts.push(<text fg={t.textMuted}> · tests: </text>)
         line5Parts.push(<text fg={testColor}>{testC}/{testM}</text>)
 
+        // --- AI (Opcja A): nazwa modelu + status ---
+        const aiOn = m.aiEnabled === true
+        const aiModel = m.aiModel ?? "?"
+        const aiProv = m.aiProvider ?? "?"
+        const aiCalls = m.aiCalls ?? 0
+        const aiOk = m.aiSuccesses ?? 0
+        const aiFail = m.aiFailures ?? 0
+        const aiMs = m.aiLastCallMs ?? 0
+        const aiErr = m.aiLastError ?? ""
+        const line6Parts: unknown[] = []
+        line6Parts.push(<text fg={t.textMuted}>ai: </text>)
+        if (!aiOn) {
+          line6Parts.push(<text fg={t.textMuted}>off</text>)
+        } else {
+          line6Parts.push(<text fg={t.accent}>{aiProv}/{aiModel}</text>)
+          const statusColor = aiFail > 0 && aiOk === 0 ? t.error : aiFail > 0 ? t.warning : t.success
+          line6Parts.push(<text fg={t.textMuted}> · </text>)
+          line6Parts.push(<text fg={statusColor}>{aiOk}/{aiCalls} ok</text>)
+          if (aiMs > 0) {
+            line6Parts.push(<text fg={t.textMuted}> · </text>)
+            line6Parts.push(<text fg={t.textMuted}>{aiMs}ms</text>)
+          }
+          if (aiErr && aiFail > 0) {
+            line6Parts.push(<text fg={t.textMuted}> · </text>)
+            line6Parts.push(<text fg={t.error}>err: {aiErr.slice(0, 60)}</text>)
+          }
+        }
+
         return (
-          <box flexDirection="column" flexShrink={0}>
+          <box flexDirection="column" flexShrink={0} border={true} borderStyle="rounded" borderColor={t.textMuted} padding={0} paddingLeft={1} paddingRight={1}>
             <box flexDirection="row">{line1Parts}</box>
             <box flexDirection="row">{line2Parts}</box>
             <box flexDirection="row">{line3Parts}</box>
             <box flexDirection="row">{line4Parts}</box>
             <box flexDirection="row">{line5Parts}</box>
+            {aiOn ? <box flexDirection="row">{line6Parts}</box> : null}
           </box>
         )
         } catch (err) {

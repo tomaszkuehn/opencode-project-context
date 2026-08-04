@@ -155,6 +155,15 @@ type Metrics = {
   revertsCount: number
   factsTokens: number
   factsMaxTokens: number
+  // --- AI (Opcja A) live stats ---
+  aiEnabled: boolean
+  aiProvider: string
+  aiModel: string
+  aiCalls: number
+  aiSuccesses: number
+  aiFailures: number
+  aiLastCallMs: number
+  aiLastError: string
 }
 
 type TestRun = {
@@ -250,6 +259,14 @@ let metrics: Metrics = {
   revertsCount: 0,
   factsTokens: 0,
   factsMaxTokens: 1500,
+  aiEnabled: false,
+  aiProvider: "",
+  aiModel: "",
+  aiCalls: 0,
+  aiSuccesses: 0,
+  aiFailures: 0,
+  aiLastCallMs: 0,
+  aiLastError: "",
 }
 let lastInjectedContext = ""
 let lastSessionId = ""
@@ -2017,6 +2034,15 @@ function flushMetrics() {
   }
   const reg = failOpenReturn(() => findRegressionWindow(), { lastGood: null, firstRed: null, failingTest: "" }, "flushMetrics regression")
   metrics.lastGoodHead = reg.lastGood?.head?.slice(0, 8) ?? ""
+  // --- AI live stats ---
+  metrics.aiEnabled = aiStatus.enabled
+  metrics.aiProvider = aiStatus.provider
+  metrics.aiModel = aiStatus.model
+  metrics.aiCalls = aiStatus.calls
+  metrics.aiSuccesses = aiStatus.successes
+  metrics.aiFailures = aiStatus.failures
+  metrics.aiLastCallMs = aiStatus.lastCallMs
+  metrics.aiLastError = aiStatus.lastError
   writeJson(metricsPath(), metrics)
   // Addition 1: persist dedup cache to disk
   failOpen(() => saveDedupCache(), "saveDedupCache")
