@@ -9,6 +9,20 @@ import { tool } from "@opencode-ai/plugin"
 // Types
 // ---------------------------------------------------------------------------
 
+type AIProvider = "openai-compatible" | "ollama" | "anthropic"
+
+type AIConfig = {
+  enabled: boolean
+  provider: AIProvider
+  baseUrl: string                 // overrides per-provider default
+  apiKey: string                   // env interpolation ${VAR}
+  model: string                     // tani model np. gpt-4o-mini
+  maxTokens: number
+  temperature: number
+  timeoutMs: number
+  fallbackChain: string[]          // kolejne modele do spróbowania
+}
+
 type Config = {
   enabled: boolean
   maxProjectMemoryTokens: number
@@ -35,6 +49,8 @@ type Config = {
   maxContextTokens: number        // 0 = autodetect from Model.limit.context (fallback 200000)
   compactThreshold: number        // percent (0-100) of limit; default 80
   compactReservedTokens: number   // buffer left for compaction (mirrors compaction.reserved)
+  // AI (Opcja A — własny tani model, niezależny od modelu kodującego)
+  ai: AIConfig
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -62,6 +78,18 @@ const DEFAULT_CONFIG: Config = {
   maxContextTokens: 0,
   compactThreshold: 80,
   compactReservedTokens: 10000,
+  // AI — domyślnie wyłączone. Włącz w opencode.json plugin options.
+  ai: {
+    enabled: false,
+    provider: "openai-compatible",
+    baseUrl: "",
+    apiKey: "",
+    model: "gpt-4o-mini",
+    maxTokens: 800,
+    temperature: 0,
+    timeoutMs: 15000,
+    fallbackChain: [],
+  },
 }
 
 type SeenContext = {
@@ -360,6 +388,299 @@ function shortHash(content: string): string {
 function isSensitivePath(filePath: string): boolean {
   const norm = filePath.replace(/\\/g, "/").toLowerCase()
   return SENSITIVE_PATH_PATTERNS.some((p) => p.test(norm))
+}
+
+// ---------------------------------------------------------------------------
+// AI module (Opcja A — własny tani model, niezależny od modelu kodującego)
+// ---------------------------------------------------------------------------
+// aiComplete() woła HTTP endpoint taniego modelu konfigurowanego w plugin options.
+// NIGDY nie rzuca — zwraca null przy błędzie; wywołujący ma fallback deterministyczny.
+// Fallbacki (warstwowo): brak konfiga → null; network/HTTP error → retry+chain → null;
+// zła odpowiedź → retry temp:0 → null.
+
+type AIStatus = {
+  enabled: boolean
+  provider: string
+  model: string
+  lastCallMs: number
+  lastError: string
+  calls: number
+  successes: number
+  failures: number
+}
+
+let aiStatus: AIStatus = {
+  enabled: false,
+  provider: "",
+  model: "",
+  lastCallMs: 0,
+  lastError: "",
+  calls: 0,
+  successes: 0,
+  failures: 0,
+}
+
+function aiLogError(msg: string) {
+  aiStatus.lastError = msg
+  try {
+    const logPath = join(memoryDir || process.cwd(), "plugin-ai.log")
+    writeFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`, { flag: "a" })
+  } catch { /* swallow */ }
+}
+
+// Interpolacja ${ENV_VAR} w wartościach konfiga (np. apiKey: "${OPENAI_API_KEY}")
+function interpolateEnv(value: string): string {
+  if (!value || typeof value !== "string") return value
+  return value.replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (_, name: string) => {
+    return process.env[name] ?? ""
+  })
+}
+
+function aiEffectiveConfig(): AIConfig | null {
+  const c = cfg.ai
+  if (!c || !c.enabled) return null
+  const apiKey = interpolateEnv(c.apiKey).trim()
+  // ollama lokalnie nie wymaga apiKey
+  if (c.provider !== "ollama" && !apiKey) return null
+  return {
+    ...c,
+    apiKey,
+    baseUrl: c.baseUrl || aiDefaultBaseUrl(c.provider),
+  }
+}
+
+function aiDefaultBaseUrl(provider: AIProvider): string {
+  switch (provider) {
+    case "ollama": return "http://localhost:11434"
+    case "anthropic": return "https://api.anthropic.com/v1"
+    case "openai-compatible":
+    default: return "https://api.openai.com/v1"
+  }
+}
+
+// Buduje body zapytania per provider
+function aiBuildBody(c: AIConfig, system: string, prompt: string, jsonMode: boolean): any {
+  if (c.provider === "anthropic") {
+    return {
+      model: c.model,
+      max_tokens: c.maxTokens,
+      temperature: c.temperature,
+      system,
+      messages: [{ role: "user", content: prompt }],
+    }
+  }
+  // openai-compatible + ollama (oba używają /chat/completions)
+  const body: any = {
+    model: c.model,
+    max_tokens: c.maxTokens,
+    temperature: c.temperature,
+    messages: [
+      ...(system ? [{ role: "system", content: system }] : []),
+      { role: "user", content: prompt },
+    ],
+  }
+  if (jsonMode && c.provider !== "ollama") body.response_format = { type: "json_object" }
+  return body
+}
+
+function aiBuildHeaders(c: AIConfig): Record<string, string> {
+  if (c.provider === "anthropic") {
+    return {
+      "content-type": "application/json",
+      "x-api-key": c.apiKey,
+      "anthropic-version": "2023-06-01",
+    }
+  }
+  return {
+    "content-type": "application/json",
+    authorization: `Bearer ${c.apiKey}`,
+  }
+}
+
+function aiUrl(c: AIConfig): string {
+  const base = c.baseUrl.replace(/\/$/, "")
+  if (c.provider === "anthropic") return `${base}/messages`
+  return `${base}/chat/completions`
+}
+
+// Ekstrakcja tekstu z odpowiedzi niezależnie od provider'a
+function aiExtractText(c: AIConfig, body: any): string {
+  if (c.provider === "anthropic") {
+    const content = body?.content
+    if (Array.isArray(content)) {
+      return content.map((p: any) => p?.text ?? "").join("")
+    }
+    return ""
+  }
+  // openai-compatible / ollama
+  const choice = body?.choices?.[0]
+  return choice?.message?.content ?? ""
+}
+
+// Pojedyncze wołanie HTTP z timeoutem. Zwraca tekst lub rzuca.
+async function aiCallOnce(c: AIConfig, system: string, prompt: string, jsonMode: boolean): Promise<string> {
+  const url = aiUrl(c)
+  const headers = aiBuildHeaders(c)
+  const body = JSON.stringify(aiBuildBody(c, system, prompt, jsonMode))
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), c.timeoutMs)
+  try {
+    const res = await fetch(url, { method: "POST", headers, body, signal: ctrl.signal })
+    if (!res.ok) {
+      const text = await res.text().catch(() => "")
+      throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`)
+    }
+    const data = await res.json() as any
+    const text = aiExtractText(c, data)
+    if (!text || !text.trim()) throw new Error("empty response")
+    return text
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// Spróbuj sparsować JSON bez rzucania; zwraca null przy błędzie
+function tryParseJson(text: string): any | null {
+  try {
+    // wytnij blok ```json ... ``` jeśli występuje
+    const m = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
+    const raw = m ? m[1] : text
+    return JSON.parse(raw.trim())
+  } catch {
+    return null
+  }
+}
+
+// Główna funkcja AI. Zwraca null przy każdym błędzie (nigdy nie rzuca).
+// Wywołujący ma fallback deterministyczny.
+async function aiComplete(opts: {
+  system?: string
+  prompt: string
+  jsonMode?: boolean
+}): Promise<string | null> {
+  const c = aiEffectiveConfig()
+  if (!c) return null
+  aiStatus.enabled = true
+  aiStatus.provider = c.provider
+  aiStatus.model = c.model
+
+  const models = [c.model, ...c.fallbackChain]
+  const system = opts.system ?? ""
+  const prompt = opts.prompt
+  const jsonMode = opts.jsonMode ?? false
+
+  for (let i = 0; i < models.length; i++) {
+    const model = models[i]
+    const cc = { ...c, model }
+    const t0 = Date.now()
+    aiStatus.calls += 1
+    try {
+      let text = await aiCallOnce(cc, system, prompt, jsonMode)
+      // Jeśli JSON mode, zweryfikuj parsowaniem
+      if (jsonMode) {
+        let parsed = tryParseJson(text)
+        if (!parsed) {
+          // retry 1× z temp:0
+          const cc0 = { ...cc, temperature: 0 }
+          aiStatus.calls += 1
+          try {
+            text = await aiCallOnce(cc0, system, prompt, jsonMode)
+            parsed = tryParseJson(text)
+          } catch (e: any) {
+            aiLogError(`retry temp:0 failed (${model}): ${e?.message ?? e}`)
+          }
+          if (!parsed) {
+            aiStatus.failures += 1
+            aiLogError(`bad JSON from ${model}: ${text.slice(0, 200)}`)
+            continue // spróbuj kolejny model z fallbackChain
+          }
+        }
+      }
+      aiStatus.successes += 1
+      aiStatus.lastCallMs = Date.now() - t0
+      aiStatus.lastError = ""
+      return text
+    } catch (e: any) {
+      aiStatus.failures += 1
+      aiStatus.lastCallMs = Date.now() - t0
+      const msg = e?.name === "AbortError" ? `timeout (${cc.timeoutMs}ms)` : (e?.message ?? String(e))
+      aiLogError(`call failed (${model}): ${msg}`)
+      // spróbuj kolejny model z fallbackChain (jeśli błąd sieciowy / HTTP)
+      continue
+    }
+  }
+  return null
+}
+
+// Diagnostyka AI dla komendy /memory ai status
+function aiStatusText(): string {
+  if (!aiStatus.enabled && !aiEffectiveConfig()) {
+    return [
+      "AI: wyłączone.",
+      "Aby włączyć, dodaj w opencode.json plugin options:",
+      '  "ai": { "enabled": true, "provider": "openai-compatible", "apiKey": "${OPENAI_API_KEY}", "model": "gpt-4o-mini" }',
+      "Inni providerzy: \"ollama\" (lokalny, bez apiKey), \"anthropic\".",
+    ].join("\n")
+  }
+  return [
+    `AI: ${aiStatus.enabled ? "włączone" : "wyłączone (brak apiKey)"}`,
+    `Provider: ${aiStatus.provider}`,
+    `Model: ${aiStatus.model}`,
+    `Wołania: ${aiStatus.calls} (sukces: ${aiStatus.successes}, porażka: ${aiStatus.failures})`,
+    `Ostatni czas: ${aiStatus.lastCallMs}ms`,
+    aiStatus.lastError ? `Ostatni błąd: ${aiStatus.lastError}` : "Brak błędów.",
+    aiStatus.failures > 0 ? "Fallback deterministyczny aktywny (AI nie przeszkadza)." : "",
+  ].filter(Boolean).join("\n")
+}
+
+// --- AI-enhanced: triage ostatnich failed tests -------------------------------
+// Analizuje logi nieudanych testów i proponuje root cause. Fallback: deterministyczna lista.
+async function aiTriageFailedTests(): Promise<string> {
+  const fails = testHistory.filter((t) => t.exitCode !== 0).slice(-3)
+  if (!fails.length) return "Brak nieudanych testów w historii."
+  const ctx = fails.map((t) => {
+    return `## ${t.command} (exit ${t.exitCode}, ${t.timestamp})\nSummary: ${t.summary}\nFailed: ${t.failed.slice(0, 5).join(", ")}`
+  }).join("\n\n")
+  const system = "Jesteś inżynierem QA. Analizujesz logi nieudanych testów i wskazujesz prawdopodobny root cause. Odpowiadaj zwięźle po polsku, max 5 punktów."
+  const prompt = `Oto ostatnie nieudane testy:\n\n${ctx}\n\nWymień prawdopodobne root causes (max 5, krótko):`
+  const out = await aiComplete({ system, prompt })
+  if (!out) {
+    // fallback deterministyczny
+    return ["AI triage niedostępne. Ostatnie nieudane testy:", "", ctx].join("\n")
+  }
+  return out
+}
+
+// --- AI-enhanced: podsumowanie sesji do handoffa -------------------------------
+// Zwraca krótki status (1-2 zdania) na bazie edytowanych plików + testów. Fallback: puste.
+async function aiSummarizeSession(edits: string[], testStatus?: { command: string; exitCode: number; summary: string }): Promise<string> {
+  const bits: string[] = []
+  if (edits.length) bits.push(`Edytowane pliki: ${edits.slice(0, 10).join(", ")}`)
+  if (testStatus) bits.push(`Test: ${testStatus.command} (exit ${testStatus.exitCode}): ${testStatus.summary}`)
+  if (!bits.length) return ""
+  const system = "Jesteś asystentem dev. Podsumuj krótko stan sesji (1-2 zdania po polsku)."
+  const prompt = `Stan sesji:\n${bits.join("\n")}\n\nPodsumuj krótko co zrobiono i na czym stiano:`
+  const out = await aiComplete({ system, prompt })
+  return out ?? ""
+}
+
+// --- AI-enhanced: ekstrakcja konwencji/ryzyka z README/CLAUDE.md ---------------
+// Zwraca listę faktów "ludzkich" wykrytych z dokumentacji. Fallback: puste (auto-fakty deterministyczne wystarczą).
+async function aiExtractHumanFacts(root: string): Promise<string> {
+  const candidates = ["README.md", "CLAUDE.md", "AGENTS.md", "CONTRIBUTING.md"]
+  const docs: string[] = []
+  for (const f of candidates) {
+    const p = join(root, f)
+    if (existsSync(p)) {
+      const raw = readText(p)
+      if (raw) docs.push(`## ${f}\n${truncateLines(raw, 200)}`)
+    }
+  }
+  if (!docs.length) return ""
+  const system = "Ekstrahuj konwencje, ryzyka i decyzje architektoniczne z dokumentacji projektu. Odpowiadaj po polsku w formacie Markdown z sekcjami ## Konwencje, ## Ryzyka. Brak = puste sekcje."
+  const prompt = `Dokumentacja projektu:\n\n${docs.join("\n\n")}\n\nWymień konwencje kodowania, ryzyka i decyzje architektoniczne (max 10 punktów łącznie):`
+  const out = await aiComplete({ system, prompt })
+  return out ?? ""
 }
 
 // ---------------------------------------------------------------------------
@@ -1004,10 +1325,15 @@ function memoryLesson(text: string): string {
 // project-facts.md
 // ---------------------------------------------------------------------------
 
+function factsAiPath(): string {
+  return join(memoryDir, "project-facts.ai.md")
+}
+
 function readProjectFacts(): string {
   const raw = readText(factsPath())
   const auto = cfg.autoExtractFacts ? readAutoFacts() : ""
-  const merged = [auto, raw].filter(Boolean).join("\n\n---\n\n")
+  const ai = cfg.ai?.enabled ? readText(factsAiPath()) : ""
+  const merged = [auto, ai, raw].filter(Boolean).join("\n\n---\n\n")
   if (!merged) return ""
   const tokens = estimateTokens(merged)
   if (tokens > cfg.maxProjectMemoryTokens) {
@@ -2217,11 +2543,34 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
           const edits = gitStatusPorcelain()
           const handoff = buildHandoff(sessionId, edits)
           writeActiveSession(handoff)
+          // AI enhancement: krótki podsumowany status sesji (async, fallback = puste)
+          await failOpenAsync(async () => {
+            const summary = await aiSummarizeSession(edits, handoff.testStatus ? {
+              command: handoff.testStatus.lastCommand,
+              exitCode: handoff.testStatus.exitCode,
+              summary: handoff.testStatus.summary,
+            } : undefined)
+            if (summary) {
+              const s = readActiveSession()
+              if (s) {
+                s.currentStatus = summary.slice(0, 400)
+                writeActiveSession(s)
+              }
+            }
+          }, "aiSummarizeSession")
           // Addition 2: fold per-session trace into persistent aggregated trace
           failOpen(() => mergeTraceIntoGlobal(), "mergeTraceIntoGlobal")
           // Auto-extract deterministic facts (build/test/architecture/environment)
           if (cfg.autoExtractFacts && cfg.autoExtractOnEvents.includes(type)) {
             failOpen(() => refreshAutoFacts(), `refreshAutoFacts on ${type}`)
+            // AI enhancement: konwencje/ryzyka z README/CLAUDE.md (fallback = puste)
+            await failOpenAsync(async () => {
+              const humanFacts = await aiExtractHumanFacts(worktreePath || projectRoot)
+              if (humanFacts) {
+                const p = join(memoryDir, "project-facts.ai.md")
+                writeFileSync(p, `# AI-ekstrahowane fakty (regenerowane przy session.idle)\n# Nie edytuj ręcznie; usuń plik by wyłączyć.\n\n${humanFacts}\n`, "utf8")
+              }
+            }, "aiExtractHumanFacts")
           }
           flushMetrics()
         } else if (type === "session.deleted") {
@@ -2391,6 +2740,9 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
         else if (cmd.startsWith("/memory compact-reset")) output.result = memoryCompactReset()
         else if (cmd.startsWith("/memory compact-now")) output.result = await memoryCompactNow(client)
         else if (cmd.startsWith("/memory test-history")) output.result = memoryTestHistory()
+        else if (cmd.startsWith("/memory ai status")) output.result = aiStatusText()
+        else if (cmd.startsWith("/memory ai triage")) output.result = await aiTriageFailedTests()
+        else if (cmd.startsWith("/memory ai")) output.result = aiStatusText()
         else if (cmd.startsWith("/memory tui")) output.result = memoryTuiDump()
         else if (cmd.startsWith("/memory dashboard")) output.result = "Dashboard TUI: użyj w trybie interaktywnym (route: memory-dashboard)"
         else if (cmd.startsWith("/context budget")) output.result = contextBudget()

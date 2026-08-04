@@ -4,7 +4,10 @@
 .opencode/memory/cache/
 .opencode/memory/index/
 .opencode/memory/plugin-errors.log
+.opencode/memory/plugin-ai.log
 .opencode/memory/project-facts.auto.md
+.opencode/memory/project-facts.ai.md
+.opencode/plugins/tsconfig.pc.json
 .opencode/memory/tui-trace.log
 samouczek.html
 nul

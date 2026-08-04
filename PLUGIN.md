@@ -464,6 +464,38 @@ Implementację uznajemy za gotową do MVP, jeżeli:
 - Semantyczne wyszukiwanie lokalne.
 - Opcjonalny lokalny model do generowania streszczeń, wyłączony domyślnie.
 
+### Etap 5: Moduł AI (Opcja A — własny tani model)
+
+Zaimplementowano jako rozszerzenie pluginu. Moduł woła tani model AI (niezależny od modelu kodującego) konfigurowany w sekcji `ai` plugin options, bezpośrednio przez HTTP `fetch` — bez użycia SDK OpenCode do sterowania modelem kodującym.
+
+**Zakres:**
+
+1. **Handoff sesji** (`session.idle`): LLM podsumowuje przebieg sesji do 1-2 zdań → `active-session.currentStatus`. Fallback: puste (deterministycznie).
+2. **Fakty projektu** (`project-facts.ai.md`): LLM ekstrahuje konwencje i ryzyka z `README.md`/`CLAUDE.md`/`AGENTS.md`/`CONTRIBUTING.md`. Fallback: brak pliku (używane są tylko auto-fakty deterministyczne).
+3. **Triage testów** (`/memory ai triage`): LLM analizuje ostatnie 3 nieudane testy i proponuje root cause. Fallback: deterministyczna lista testów.
+
+**Konfiguracja:**
+
+```jsonc
+"ai": {
+  "enabled": false,                  // domyślnie wyłączone
+  "provider": "openai-compatible",   // | "ollama" | "anthropic"
+  "baseUrl": "",                     // puste = domyślny per provider
+  "apiKey": "",                       // ${ENV_VAR} interpolacja; ollama nie wymaga
+  "model": "gpt-4o-mini",
+  "maxTokens": 800,
+  "temperature": 0,
+  "timeoutMs": 15000,
+  "fallbackChain": []                 // kolejne modele do spróbowania
+}
+```
+
+**Fallbacki (warstwowo):** brak `enabled`/`apiKey` → moduł wyłączony; błąd sieci/HTTP/timeout → retry 1× + `fallbackChain`; zły JSON → retry `temp:0`. `aiComplete()` zawsze zwraca `null` przy błędzie — nigdy nie rzuca. Wywołujący używa ścieżki deterministycznej. **AI nigdy nie w ścieżce krytycznej.**
+
+**Pliki:** `project-facts.ai.md` (regenerowane, gitignored), `plugin-ai.log` (log błędów, gitignored).
+
+**Komendy diagnostyczne:** `/memory ai status`, `/memory ai triage`.
+
 
 ## Metryki
 
@@ -478,7 +510,17 @@ Plugin powinien zapisywać lokalne statystyki w JSON:
   "estimatedReductionPercent": 76.9,
   "deduplicatedReads": 11,
   "artifactsCreated": 7,
-  "artifactBytes": 84000
+  "artifactBytes": 84000,
+  "ai": {
+    "enabled": true,
+    "provider": "openai-compatible",
+    "model": "gpt-4o-mini",
+    "calls": 3,
+    "successes": 3,
+    "failures": 0,
+    "lastCallMs": 1240,
+    "lastError": ""
+  }
 }
 ```
 

@@ -32,6 +32,7 @@ Plugin zbudowany według specyfikacji `PLUGIN.md`.
   - [7. Lekcje projektu (`/memory lesson`)](#7-lekcje-projektu--memory-lesson)
   - [8. Heurystyka trudnych problemów](#8-heurystyka-trudnych-problemów)
   - [9. Ekstraktory platformy docelowej](#9-ekstraktory-platformy-docelowej)
+  - [10. Moduł AI (Opcja A — własny tani model)](#10-moduł-ai-opcja-a--własny-tani-model)
 - [Przewodnik: 4 scenariusze krok po kroku](#przewodnik-4-scenariusze-krok-po-kroku)
 - [Metryki i diagnostyka](#metryki-i-diagnostyka)
 - [Rozwiązywanie problemów](#rozwiązywanie-problemów)
@@ -351,8 +352,52 @@ Wszystkie pola sekcji `contextOptimizer` w `opencode.json` są opcjonalne — br
 | `maxContextTokens`        | `0`       | Limit kontekstu dla progu kompaktacji; `0` = autodetekcja z `Model.limit.context` (fallback 200000) |
 | `compactThreshold`         | `80`      | Próg kompaktacji w procentach limitu (0-100) |
 | `compactReservedTokens`    | `10000`   | Bufor tokenów zostawiany przy kompaktacji (odzwierciedla `compaction.reserved`) |
+| `ai`                      | *(objekt)* | Konfiguracja własnego taniego modelu AI (Opcja A). Domyślnie wyłączone. Zobacz sekcję **AI module** poniżej. |
 
 Zmiany konfiguracji wymagają restartu OpenCode.
+
+### AI module (`ai`)
+
+Plugin może wołać tani model AI (niezależny od modelu kodującego) do 3 zadań: podsumowanie sesji (handoff), ekstrakcja konwencji/ryzyka z dokumentacji (README/CLAUDE.md), oraz triage nieudanych testów. Model jest konfigurowany w sekcji `ai` plugin options:
+
+```jsonc
+"plugin": [["./.opencode/plugins/project-context.ts", {
+  // ...
+  "ai": {
+    "enabled": true,
+    "provider": "openai-compatible",        // | "ollama" | "anthropic"
+    "baseUrl": "",                           // puste = domyślny per provider
+    "apiKey": "${OPENAI_API_KEY}",           // env interpolation; ollama nie wymaga
+    "model": "gpt-4o-mini",                  // tani model
+    "maxTokens": 800,
+    "temperature": 0,
+    "timeoutMs": 15000,
+    "fallbackChain": ["ollama:qwen2.5:7b"]   // kolejne modele do spróbowania
+  }
+}]]
+```
+
+| Pole           | Domyślnie             | Opis |
+| -------------- | --------------------- | ---- |
+| `enabled`      | `false`               | Włącz moduł AI |
+| `provider`     | `"openai-compatible"` | Jeden z: `openai-compatible` (OpenAI/Together/etc.), `ollama` (lokalny, bez apiKey), `anthropic` |
+| `baseUrl`      | `""`                  | Puste = domyślny per provider (`https://api.openai.com/v1`, `http://localhost:11434`, `https://api.anthropic.com/v1`) |
+| `apiKey`       | `""`                  | Klucz API; wspiera interpolację `${ENV_VAR}`. Dla `ollama` nie wymagany |
+| `model`        | `"gpt-4o-mini"`       | Nazwa modelu (np. `gpt-4o-mini`, `qwen2.5:7b`, `claude-3-5-haiku-20241022`) |
+| `maxTokens`    | `800`                 | Limit tokenów odpowiedzi |
+| `temperature`  | `0`                   | Temperatura (0 = deterministyczne) |
+| `timeoutMs`    | `15000`               | Timeout żądania (AbortController) |
+| `fallbackChain`| `[]`                  | Lista kolejnych modeli do spróbowania przy błędzie pierwszego |
+
+**Fallback (warstwowo):** przy braku `enabled`/`apiKey` → moduł wyłączony, plugin działa deterministycznie (status quo). Przy błędzie sieci/HTTP/timeout → retry 1× + próba kolejnych modeli z `fallbackChain`. Przy złej odpowiedzi JSON → retry 1× z `temperature: 0`. W każdym przypadku `aiComplete()` zwraca `null` — wywołujący używa ścieżki deterministycznej. AI nigdy nie w ścieżce krytycznej.
+
+**Komendy diagnostyczne:**
+- `/memory ai status` — czy AI włączone, jaki model, liczniki wołań/ sukcesów/porażek, ostatni błąd
+- `/memory ai triage` — analizuje ostatnie nieudane testy i proponuje root cause (fallback: lista testów)
+
+**Pliki:**
+- `.opencode/memory/project-facts.ai.md` — AI-ekstrahowane fakty z dokumentacji (regenerowane na `session.idle`, gitignored)
+- `.opencode/memory/plugin-ai.log` — log błędów AI (gitignored)
 
 ---
 
@@ -512,6 +557,14 @@ Przykład wyjścia:
 [2026-07-30T14:55:01Z] OK  idf.py build
     Build complete
 ```
+
+#### `/memory ai status`
+
+Pokazuje stan modułu AI: czy włączony, provider, model, liczniki wołań/ sukcesów/porażek, ostatni czas odpowiedzi i ostatni błąd. Gdy AI wyłączone, podpowiada jak je skonfigurować.
+
+#### `/memory ai triage`
+
+Analizuje ostatnie nieudane testy (do 3 z historii) i proponuje prawdopodobny root cause. Wymaga włączonego `ai`. Przy braku AI lub błędzie — fallback: deterministyczna lista nieudanych testów (jak `/memory test-history` filtrowana po FAIL).
 
 #### `/memory lesson <opis>`
 
@@ -740,6 +793,8 @@ To klasyczny scenariusz dla `/regression`: agent dostaje zgłoszenie o błędzie
 /memory compact-now      # wymuś kompaktację (lub instrukcja)
 /memory compact-reset    # zresetuj flagę sugestii
 /memory test-history      # historia uruchomień testów/buildów
+/memory ai status         # czy AI włączone? jaki model? liczniki wołań
+/memory ai triage         # root-cause ostatnich nieudanych testów (AI)
 /memory tui              # tekstowy widok TUI (działa w CLI)
 /memory dashboard        # pełnoekranowy dashboard TUI (route: memory-dashboard)
 /regression last-good     # kiedy testy przeszły ostatnio?
@@ -884,6 +939,8 @@ Komenda `/memory propose` generuje propozycje sekcji `# Komendy`, `# Hotspoty`, 
 - **Platforma docelowa** (nowe) — GitHub Actions `matrix.os`/`runs-on`, Electron (`electron-builder.*`), Tauri (`tauri.conf.json`), Capacitor (`capacitor.config.*`), Expo (`app.json` expo), `package.json` `os`/`cpu`/`main`, `tsconfig.json` `lib` (DOM/Node/hybrid)
 
 Plik `.auto.md` jest dodawany do `.gitignore` (regenerowany, nie wersjonowany). `project-facts.md` pozostaje dla faktów ręcznych (ryzyka, konwencje zespołu, lekcje) i jest wersjonowany. Wstrzykiwany kontekst to połączenie obu, ucięte do budżetu. Komendy `/memory auto` i `/memory auto-refresh` pozwalają podejrzeć i ręcznie odświeżyć auto-fakty. Konfiguracja: `autoExtractFacts: false` wyłącza funkcję; `autoExtractOnEvents: []` wyłącza auto-regenerację, zostawiając tylko `/memory auto-refresh`.
+
+Gdy włączony jest moduł `ai`, na `session.idle` plugin woła tani model i buduje dodatkowy plik `.opencode/memory/project-facts.ai.md` z konwencjami i ryzykami ekstrahowanymi z `README.md`/`CLAUDE.md`/`AGENTS.md`/`CONTRIBUTING.md`. Plik jest regenerowany (gitignored) i wstrzykiwany razem z auto-faktami w ramach budżetu `maxProjectMemoryTokens`. Brak AI = brak pliku (fallback deterministyczny).
 
 ### 3. Pamięć stanu testów w czasie (`test-history.json`)
 
@@ -1103,6 +1160,60 @@ Wyjście trafia do sekcji `## Platforma docelowa` w `project-facts.auto.md`, reg
 - Target: Electron desktop  (electron-builder)
 - tsconfig lib: DOM+Node  (hybrid/browser+node)
 ```
+
+### 10. Moduł AI (Opcja A — własny tani model)
+
+Plugin może wołać tani model AI **niezależny od modelu kodującego**, konfigurowany w sekcji `ai` plugin options. Moduł rozszerza 3 istniejące funkcje o inteligentne podsumowania, których deterministyczne ekstraktory nie potrafią:
+
+| Funkcja | Bez AI (deterministycznie) | Z AI |
+| ------- | -------------------------- | ---- |
+| **Handoff sesji** (`session.idle`) | `currentStatus` puste lub wpisane ręcznie | Krótkie podsumowanie 1-2 zdania co zrobiono i na czym stiano |
+| **Fakty projektu** (`project-facts.ai.md`) | Tylko auto-fakty z manifestów (build/test/arch) | Dodatkowo konwencje i ryzyka ekstrahowane z `README.md`/`CLAUDE.md`/`AGENTS.md`/`CONTRIBUTING.md` |
+| **Triage testów** (`/memory ai triage`) | Lista nieudanych testów z `/memory test-history` | Proponowany root cause (max 5 krótkich punktów) |
+
+**Konfiguracja** (w `opencode.json` plugin options):
+
+```jsonc
+"ai": {
+  "enabled": true,
+  "provider": "openai-compatible",   // | "ollama" (lokalny, bez apiKey) | "anthropic"
+  "baseUrl": "",                      // puste = domyślny per provider
+  "apiKey": "${OPENAI_API_KEY}",      // env interpolation ${VAR}; ollama nie wymaga
+  "model": "gpt-4o-mini",             // tani model
+  "maxTokens": 800,
+  "temperature": 0,
+  "timeoutMs": 15000,
+  "fallbackChain": ["qwen2.5:7b"]     // kolejne modele do spróbowania
+}
+```
+
+Szczegóły pól w [Konfiguracja → AI module](#ai-module-ai).
+
+**Fallbacki (warstwowo):**
+
+1. Brak `ai.enabled` lub brak `apiKey` (z wyjątkiem `ollama`) → moduł wyłączony cicho, plugin działa deterministycznie (status quo).
+2. Błąd sieci / HTTP 4xx/5xx / timeout (`AbortController`) → retry 1× + próba kolejnych modeli z `fallbackChain` → `null`.
+3. Zła odpowiedź JSON (gdy `jsonMode`) → retry 1× z `temperature: 0` → `null`.
+
+W każdym przypadku `aiComplete()` zwraca `null` — wywołujący używa ścieżki deterministycznej. **AI nigdy nie w ścieżce krytycznej**: każde wywołanie jest opcjonalnym wzbogaceniem, nigdy blokadą.
+
+**Pliki:**
+
+- `.opencode/memory/project-facts.ai.md` — AI-ekstrahowane fakty z dokumentacji (regenerowane na `session.idle`, gitignored)
+- `.opencode/memory/plugin-ai.log` — log błędów AI (gitignored)
+
+**Komendy:**
+
+- `/memory ai status` — czy AI włączone, provider, model, liczniki wołań/ sukcesów/porażek, ostatni czas i błąd
+- `/memory ai triage` — analizuje ostatnie 3 nieudane testy i proponuje root cause (fallback: lista testów)
+
+**Priorytet danych w readProjectFacts():** auto-fakty → AI-fakty → fakty ręczne (wersjonowane). Wszystko ucięte do budżetu `maxProjectMemoryTokens`.
+
+**Bezpieczeństwo:**
+- `apiKey` przez interpolację `${ENV_VAR}` — nigdy nie hardkodować w `opencode.json`
+- AI czyta tylko pliki dokumentacji (`README.md`/`CLAUDE.md`/`AGENTS.md`/`CONTRIBUTING.md`), nie kod źródłowy
+- Prompt systemowy zawsze po polsku, z limitem `maxTokens` (domyślnie 800)
+- Timeout 15s domyślnie — AI nie blokuje `session.idle` na długo
 
 ---
 
@@ -1477,6 +1588,9 @@ Błędy pluginu logowane są w `.opencode/memory/plugin-errors.log`. Plugin dzia
 | `/regression suspect` nie pokazuje podejrzanych plików | Brak zmian w oknie lub brak SHA — włącz `regressionTrackHead: true` i uruchom test po commicie |
 | `/regression revert` prosi o `confirm`      | Tryb bezpieczny (`regressionSafeRevertOnly: true`); wpisz `/regression revert confirm <plik>` lub ustaw `false` |
 | Po restarcie deduplikacja nie działa        | Sprawdź `persistentDedupCache: true` i istnienie `.opencode/memory/cache/dedup-seen.json` |
+| `/memory ai status` pokazuje "wyłączone"   | Dodaj sekcję `ai` w `opencode.json` plugin options z `enabled: true` i `apiKey` (lub `provider: "ollama"`) |
+| `/memory ai triage` zwraca listę testów zamiast root cause | AI niedostępne (brak `apiKey`, błąd sieci, timeout) — fallback deterministyczny. Sprawdź `/memory ai status` i `.opencode/memory/plugin-ai.log` |
+| `project-facts.ai.md` się nie tworzy         | Włącz `ai.enabled` i upewnij się że w repo istnieje `README.md`/`CLAUDE.md`/`AGENTS.md`/`CONTRIBUTING.md` |
 
 ### TUI plugin (pasek statusu na dole ekranu)
 
