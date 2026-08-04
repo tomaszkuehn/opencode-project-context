@@ -497,7 +497,7 @@ const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
         if (!m || !m.toolCalls) {
           return (
             <box flexDirection="column" flexShrink={0}>
-              <text fg={t.textMuted}>memory: idle</text>
+              <text fg={t.primary}>memory: </text><text fg={t.textMuted}>idle</text>
             </box>
           )
         }
@@ -510,13 +510,24 @@ const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
         const artBytes = m.artifactsBytes ?? 0
 
         // --- Line 1: token savings (existing) ---
-        const parts1: string[] = []
-        parts1.push(`tools: ${calls}`)
-        parts1.push(`saved: ~${fmtTokens(saved)} tok`)
-        parts1.push(`${reduction.toFixed(0)}% reduc.`)
-        if (dedup > 0) parts1.push(`dedup: ${dedup}`)
-        if (arts > 0) parts1.push(`art: ${arts} (${fmtBytes(artBytes)})`)
-        const line1 = `memory: ` + parts1.join(" · ")
+        // Kolorowane fragmenty: etykiety textMuted, wartości istotne success/accent
+        const line1Parts: unknown[] = []
+        line1Parts.push(<text fg={t.primary}>memory:</text>)
+        line1Parts.push(<text fg={t.textMuted}> tools: </text>)
+        line1Parts.push(<text fg={t.accent}>{calls}</text>)
+        line1Parts.push(<text fg={t.textMuted}> · saved: ~</text>)
+        line1Parts.push(<text fg={t.success}>{fmtTokens(saved)} tok</text>)
+        line1Parts.push(<text fg={t.textMuted}> · </text>)
+        line1Parts.push(<text fg={reduction >= 50 ? t.success : reduction >= 20 ? t.warning : t.textMuted}>{reduction.toFixed(0)}% reduc.</text>)
+        if (dedup > 0) {
+          line1Parts.push(<text fg={t.textMuted}> · dedup: </text>)
+          line1Parts.push(<text fg={t.accent}>{dedup}</text>)
+        }
+        if (arts > 0) {
+          line1Parts.push(<text fg={t.textMuted}> · art: </text>)
+          line1Parts.push(<text fg={t.accent}>{arts}</text>)
+          line1Parts.push(<text fg={t.textMuted}> ({fmtBytes(artBytes)})</text>)
+        }
 
         // --- Line 2: disk usage ---
         const disk = m.diskBytes ?? 0
@@ -525,7 +536,13 @@ const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
         const cacheBytes = m.cacheBytes ?? 0
         const artifactsBytes = m.artifactsBytes ?? 0
         const diskColor = diskPct >= 90 ? t.error : diskPct >= 70 ? t.warning : t.textMuted
-        const line2 = `disk: ${fmtBytes(disk)} / ${fmtBytes(diskLimit)} (${diskPct}%) · art ${fmtBytes(artifactsBytes)} · cache ${fmtBytes(cacheBytes)}`
+        const line2Parts: unknown[] = []
+        line2Parts.push(<text fg={t.textMuted}>disk: </text>)
+        line2Parts.push(<text fg={diskColor}>{fmtBytes(disk)} / {fmtBytes(diskLimit)} ({diskPct}%)</text>)
+        line2Parts.push(<text fg={t.textMuted}> · art </text>)
+        line2Parts.push(<text fg={artifactsBytes > 10 * 1024 * 1024 ? t.warning : t.textMuted}>{fmtBytes(artifactsBytes)}</text>)
+        line2Parts.push(<text fg={t.textMuted}> · cache </text>)
+        line2Parts.push(<text fg={cacheBytes > 50 * 1024 * 1024 ? t.warning : t.textMuted}>{fmtBytes(cacheBytes)}</text>)
 
         // --- Line 3: context budget + compaction ---
         const ctxTok = m.contextTokens ?? 0
@@ -536,7 +553,15 @@ const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
         const factsTok = m.factsTokens ?? 0
         const factsMax = m.factsMaxTokens ?? 1500
         const factsPct = pct(factsTok, factsMax)
-        const line3 = `ctx: ${fmtTokens(ctxTok)}/${fmtTokens(ctxLimit)} tok (${ctxPct}%, compact@${threshold}%) · facts: ${fmtTokens(factsTok)}/${fmtTokens(factsMax)} (${factsPct}%) [${m.compactMode ?? "?"}]`
+        const factsColor = factsPct >= 90 ? t.error : factsPct >= 70 ? t.warning : t.textMuted
+        const line3Parts: unknown[] = []
+        line3Parts.push(<text fg={t.textMuted}>ctx: </text>)
+        line3Parts.push(<text fg={ctxColor}>{fmtTokens(ctxTok)}/{fmtTokens(ctxLimit)} tok ({ctxPct}%, compact@{threshold}%)</text>)
+        line3Parts.push(<text fg={t.textMuted}> · facts: </text>)
+        line3Parts.push(<text fg={factsColor}>{fmtTokens(factsTok)}/{fmtTokens(factsMax)} ({factsPct}%)</text>)
+        line3Parts.push(<text fg={t.textMuted}> [</text>)
+        line3Parts.push(<text fg={m.compactMode === "confirm" ? t.warning : t.textMuted}>{m.compactMode ?? "?"}</text>)
+        line3Parts.push(<text fg={t.textMuted}>]</text>)
 
         // --- Line 4: session + git + regression ---
         const handoff = ageLabel(m.handoffAgeMin ?? 0)
@@ -551,22 +576,42 @@ const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
         const lastGood = m.lastGoodHead ? ` · last-good:${m.lastGoodHead}` : ""
         const reverts = m.revertsCount ?? 0
         const revertsLabel = reverts > 0 ? ` · reverts:${reverts}` : ""
-        const line4 = `handoff: ${handoff} · mod:${mod} · dec:${dec} · blk:${blk} · HEAD:${head}${dirtyLabel}${lspLabel}${lastGood}${revertsLabel}`
+        const line4Parts: unknown[] = []
+        line4Parts.push(<text fg={t.textMuted}>handoff: </text>)
+        line4Parts.push(<text fg={(m.handoffAgeMin ?? 0) > 1440 ? t.warning : t.text}>{handoff}</text>)
+        line4Parts.push(<text fg={t.textMuted}> · mod:</text>)
+        line4Parts.push(<text fg={mod > 0 ? t.accent : t.textMuted}>{mod}</text>)
+        line4Parts.push(<text fg={t.textMuted}> · dec:</text>)
+        line4Parts.push(<text fg={dec > 0 ? t.accent : t.textMuted}>{dec}</text>)
+        line4Parts.push(<text fg={t.textMuted}> · blk:</text>)
+        line4Parts.push(<text fg={blk > 0 ? t.error : t.textMuted}>{blk}</text>)
+        line4Parts.push(<text fg={t.textMuted}> · HEAD:</text>)
+        line4Parts.push(<text fg={t.text}>{head}</text>)
+        if (dirty > 0) line4Parts.push(<text fg={t.warning}>{dirtyLabel}</text>)
+        if (lsp > 0) line4Parts.push(<text fg={t.error}> · lsp:{lsp}err</text>)
+        if (m.lastGoodHead) line4Parts.push(<text fg={t.textMuted}> · last-good:</text>, <text fg={t.text}>{m.lastGoodHead}</text>)
+        if (reverts > 0) line4Parts.push(<text fg={t.warning}> · reverts:{reverts}</text>)
 
         // --- Line 5: cache limits ---
         const dedupC = m.dedupCacheCount ?? 0
         const dedupM = m.dedupCacheMax ?? 500
         const testC = m.testHistoryCount ?? 0
         const testM = m.testHistoryMax ?? 50
-        const line5 = `dedup cache: ${dedupC}/${dedupM} · tests: ${testC}/${testM}`
+        const dedupColor = dedupC >= dedupM ? t.warning : t.textMuted
+        const testColor = testC >= testM ? t.warning : t.textMuted
+        const line5Parts: unknown[] = []
+        line5Parts.push(<text fg={t.textMuted}>dedup cache: </text>)
+        line5Parts.push(<text fg={dedupColor}>{dedupC}/{dedupM}</text>)
+        line5Parts.push(<text fg={t.textMuted}> · tests: </text>)
+        line5Parts.push(<text fg={testColor}>{testC}/{testM}</text>)
 
         return (
           <box flexDirection="column" flexShrink={0}>
-            <text fg={t.textMuted}>{line1}</text>
-            <text fg={diskColor}>{line2}</text>
-            <text fg={ctxColor}>{line3}</text>
-            <text fg={t.textMuted}>{line4}</text>
-            <text fg={t.textMuted}>{line5}</text>
+            <box flexDirection="row">{line1Parts}</box>
+            <box flexDirection="row">{line2Parts}</box>
+            <box flexDirection="row">{line3Parts}</box>
+            <box flexDirection="row">{line4Parts}</box>
+            <box flexDirection="row">{line5Parts}</box>
           </box>
         )
         } catch (err) {
