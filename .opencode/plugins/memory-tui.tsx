@@ -1,7 +1,22 @@
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
-import { join } from "node:path"
-import { createSignal, createMemo, Text, Box } from "@opentui/solid"
-import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
+/** @jsxImportSource @opentui/solid */
+import { readFileSync, existsSync, readdirSync, statSync, appendFileSync, mkdirSync } from "node:fs"
+import { join, dirname } from "node:path"
+import { fileURLToPath } from "node:url"
+import { createSignal, createMemo } from "solid-js"
+import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiSlotPlugin } from "@opencode-ai/plugin/tui"
+
+// --- TRACE (tymczasowe, do usunięcia po diagnozie) ---
+const TRACE_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "memory")
+const TRACE_FILE = join(TRACE_DIR, "tui-trace.log")
+function trace(msg: string, data?: unknown): void {
+  try {
+    mkdirSync(TRACE_DIR, { recursive: true })
+    const extra = data !== undefined ? " " + JSON.stringify(data) : ""
+    appendFileSync(TRACE_FILE, `${new Date().toISOString()} ${msg}${extra}\n`)
+  } catch {}
+}
+trace("module-eval")
+// --- KONIEC TRACE ---
 
 type Metrics = {
   sessionId?: string
@@ -144,11 +159,11 @@ function setupToastsAndDialogs(
         compactDialogShown = true
         ui.dialog.replace(
           () => (
-            <Box flexDirection="column" padding={1} borderColor={theme.current.warning}>
-              <Text color={theme.current.warning}>Kontekst {ctxPct}% — powyżej progu {threshold}%</Text>
-              <Text color={theme.current.textMuted}>Skompaktować sesję? Zaoszczędzi tokeny.</Text>
-              <Text color={theme.current.textMuted}>  Y = skompaktuj teraz   N = odłóż</Text>
-            </Box>
+            <box flexDirection="column" padding={1} borderColor={theme.current.warning}>
+              <text fg={theme.current.warning}>Kontekst {ctxPct}% — powyżej progu {threshold}%</text>
+              <text fg={theme.current.textMuted}>Skompaktować sesję? Zaoszczędzi tokeny.</text>
+              <text fg={theme.current.textMuted}>  Y = skompaktuj teraz   N = odłóż</text>
+            </box>
           ),
           () => { compactDialogShown = false },
         )
@@ -213,34 +228,34 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
   const ar = createMemo(() => arts())
 
   const sectionTitle = (label: string) => (
-    <Text color={t.accent} style={{ bold: true }}>{label}</Text>
+    <text fg={t.accent} attributes={1}>{label}</text>
   )
 
   return (
-    <Box flexDirection="column" padding={1}>
+    <box flexDirection="column" padding={1}>
       {/* Header */}
-      <Box flexDirection="row">
-        <Text color={t.primary} style={{ bold: true }}>memory dashboard</Text>
-        <Text color={t.textMuted}>  /memory dashboard  ·  refresh 3s</Text>
-      </Box>
+      <box flexDirection="row">
+        <text fg={t.primary} attributes={1}>memory dashboard</text>
+        <text fg={t.textMuted}>  /memory dashboard  ·  refresh 3s</text>
+      </box>
 
       {/* --- Section 1: Token savings --- */}
-      <Box flexDirection="column" marginTop={1}>
+      <box flexDirection="column" marginTop={1}>
         {sectionTitle("Oszczędność tokenów")}
         {(() => {
           const mm = m()
-          if (!mm || !mm.toolCalls) return <Text color={t.textMuted}>  idle (brak danych)</Text>
+          if (!mm || !mm.toolCalls) return <text fg={t.textMuted}>  idle (brak danych)</text>
           return (
-            <Box flexDirection="column">
-              <Text color={t.text}>  tools: {mm.toolCalls} · saved: ~{fmtTokens(mm.estimatedSavedTokens ?? 0)} tok · {mm.estimatedReductionPercent ?? 0}% reduc.</Text>
-              <Text color={t.textMuted}>  dedup: {mm.deduplicatedReads ?? 0} reads · artifacts: {mm.artifactsCreated ?? 0} ({fmtBytes(mm.artifactsBytes ?? 0)})</Text>
-            </Box>
+            <box flexDirection="column">
+              <text fg={t.text}>  tools: {mm.toolCalls} · saved: ~{fmtTokens(mm.estimatedSavedTokens ?? 0)} tok · {mm.estimatedReductionPercent ?? 0}% reduc.</text>
+              <text fg={t.textMuted}>  dedup: {mm.deduplicatedReads ?? 0} reads · artifacts: {mm.artifactsCreated ?? 0} ({fmtBytes(mm.artifactsBytes ?? 0)})</text>
+            </box>
           )
         })()}
-      </Box>
+      </box>
 
       {/* --- Section 2: Disk --- */}
-      <Box flexDirection="column" marginTop={1}>
+      <box flexDirection="column" marginTop={1}>
         {sectionTitle("Dysk")}
         {(() => {
           const mm = m()
@@ -249,13 +264,13 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
           const dp = pct(disk, limit)
           const color = dp >= 90 ? t.error : dp >= 70 ? t.warning : t.text
           return (
-            <Text color={color}>  {fmtBytes(disk)} / {fmtBytes(limit)} ({dp}%) · art {fmtBytes(mm?.artifactsBytes ?? 0)} · cache {fmtBytes(mm?.cacheBytes ?? 0)}</Text>
+            <text fg={color}>  {fmtBytes(disk)} / {fmtBytes(limit)} ({dp}%) · art {fmtBytes(mm?.artifactsBytes ?? 0)} · cache {fmtBytes(mm?.cacheBytes ?? 0)}</text>
           )
         })()}
-      </Box>
+      </box>
 
       {/* --- Section 3: Context budget --- */}
-      <Box flexDirection="column" marginTop={1}>
+      <box flexDirection="column" marginTop={1}>
         {sectionTitle("Budżet kontekstu")}
         {(() => {
           const mm = m()
@@ -268,16 +283,16 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
           const fp = pct(ft, fm)
           const color = cp >= thr ? t.error : cp >= thr - 15 ? t.warning : t.text
           return (
-            <Box flexDirection="column">
-              <Text color={color}>  ctx: {fmtTokens(ct)}/{fmtTokens(cl)} tok ({cp}%, compact@{thr}%) [{mm?.compactMode ?? "?"}]</Text>
-              <Text color={t.textMuted}>  facts: {fmtTokens(ft)}/{fmtTokens(fm)} ({fp}%)</Text>
-            </Box>
+            <box flexDirection="column">
+              <text fg={color}>  ctx: {fmtTokens(ct)}/{fmtTokens(cl)} tok ({cp}%, compact@{thr}%) [{mm?.compactMode ?? "?"}]</text>
+              <text fg={t.textMuted}>  facts: {fmtTokens(ft)}/{fmtTokens(fm)} ({fp}%)</text>
+            </box>
           )
         })()}
-      </Box>
+      </box>
 
       {/* --- Section 4: Session --- */}
-      <Box flexDirection="column" marginTop={1}>
+      <box flexDirection="column" marginTop={1}>
         {sectionTitle("Sesja")}
         {(() => {
           const mm = m()
@@ -289,86 +304,86 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
           const lspLabel = lsp > 0 ? ` · lsp:${lsp}err` : ""
           const lastGood = mm?.lastGoodHead ? ` · last-good:${mm.lastGoodHead}` : ""
           return (
-            <Box flexDirection="column">
-              <Text color={t.text}>  handoff: {handoff} · mod:{mm?.modifiedCount ?? 0} · dec:{mm?.decisionsCount ?? 0} · blk:{mm?.blockersCount ?? 0}</Text>
-              <Text color={t.textMuted}>  HEAD:{mm?.headSha || "-"}{dirtyLabel}{lspLabel}{lastGood}</Text>
-              {ss?.goal ? <Text color={t.text}>  goal: {ss.goal}</Text> : null}
-              {ss?.currentStatus ? <Text color={t.textMuted}>  status: {ss.currentStatus}</Text> : null}
+            <box flexDirection="column">
+              <text fg={t.text}>  handoff: {handoff} · mod:{mm?.modifiedCount ?? 0} · dec:{mm?.decisionsCount ?? 0} · blk:{mm?.blockersCount ?? 0}</text>
+              <text fg={t.textMuted}>  HEAD:{mm?.headSha || "-"}{dirtyLabel}{lspLabel}{lastGood}</text>
+              {ss?.goal ? <text fg={t.text}>  goal: {ss.goal}</text> : null}
+              {ss?.currentStatus ? <text fg={t.textMuted}>  status: {ss.currentStatus}</text> : null}
               {ss?.blockers && ss.blockers.length > 0 ? (
-                <Box flexDirection="column">
-                  <Text color={t.warning}>  blokery:</Text>
-                  {ss.blockers.map((b, i) => <Text key={i} color={t.warning}>    - {b}</Text>)}
-                </Box>
+                <box flexDirection="column">
+                  <text fg={t.warning}>  blokery:</text>
+                  {ss.blockers.map((b, i) => <text fg={t.warning}>    - {b}</text>)}
+                </box>
               ) : null}
               {ss?.lspErrors && ss.lspErrors.length > 0 ? (
-                <Box flexDirection="column">
-                  <Text color={t.error}>  błędy LSP:</Text>
-                  {ss.lspErrors.slice(0, 5).map((e, i) => <Text key={i} color={t.error}>    - {e}</Text>)}
-                </Box>
+                <box flexDirection="column">
+                  <text fg={t.error}>  błędy LSP:</text>
+                  {ss.lspErrors.slice(0, 5).map((e, i) => <text fg={t.error}>    - {e}</text>)}
+                </box>
               ) : null}
-            </Box>
+            </box>
           )
         })()}
-      </Box>
+      </box>
 
       {/* --- Section 5: Cache limits --- */}
-      <Box flexDirection="column" marginTop={1}>
+      <box flexDirection="column" marginTop={1}>
         {sectionTitle("Cache")}
         {(() => {
           const mm = m()
           return (
-            <Text color={t.text}>  dedup: {mm?.dedupCacheCount ?? 0}/{mm?.dedupCacheMax ?? 500} · tests: {mm?.testHistoryCount ?? 0}/{mm?.testHistoryMax ?? 50}</Text>
+            <text fg={t.text}>  dedup: {mm?.dedupCacheCount ?? 0}/{mm?.dedupCacheMax ?? 500} · tests: {mm?.testHistoryCount ?? 0}/{mm?.testHistoryMax ?? 50}</text>
           )
         })()}
-      </Box>
+      </box>
 
       {/* --- Section 6: Test history --- */}
-      <Box flexDirection="column" marginTop={1}>
+      <box flexDirection="column" marginTop={1}>
         {sectionTitle("Historia testów (10 ostatnich)")}
         {(() => {
           const ts = th()
-          if (ts.length === 0) return <Text color={t.textMuted}>  (brak)</Text>
+          if (ts.length === 0) return <text fg={t.textMuted}>  (brak)</text>
           return (
-            <Box flexDirection="column">
+            <box flexDirection="column">
               {ts.map((run, i) => {
                 const status = run.exitCode === 0 ? "OK" : `FAIL(${run.exitCode})`
                 const color = run.exitCode === 0 ? t.success : t.error
                 return (
-                  <Box key={i} flexDirection="column">
-                    <Text color={color}>  [{run.timestamp}] {status}  {run.command}</Text>
-                    {run.summary ? <Text color={t.textMuted}>    {run.summary}</Text> : null}
+                  <box flexDirection="column">
+                    <text fg={color}>  [{run.timestamp}] {status}  {run.command}</text>
+                    {run.summary ? <text fg={t.textMuted}>    {run.summary}</text> : null}
                     {run.failed.length > 0 ? (
-                      <Text color={t.error}>    failed: {run.failed.slice(0, 3).join(", ")}</Text>
+                      <text fg={t.error}>    failed: {run.failed.slice(0, 3).join(", ")}</text>
                     ) : null}
-                  </Box>
+                  </box>
                 )
               })}
-            </Box>
+            </box>
           )
         })()}
-      </Box>
+      </box>
 
       {/* --- Section 7: Artifacts --- */}
-      <Box flexDirection="column" marginTop={1}>
+      <box flexDirection="column" marginTop={1}>
         {sectionTitle("Artefakty (10 największych)")}
         {(() => {
           const as = ar()
-          if (as.length === 0) return <Text color={t.textMuted}>  (brak)</Text>
+          if (as.length === 0) return <text fg={t.textMuted}>  (brak)</text>
           return (
-            <Box flexDirection="column">
+            <box flexDirection="column">
               {as.map((a, i) => (
-                <Text key={i} color={t.textMuted}>  {a.id}  {fmtBytes(a.bytes)}</Text>
+                <text fg={t.textMuted}>  {a.id}  {fmtBytes(a.bytes)}</text>
               ))}
-            </Box>
+            </box>
           )
         })()}
-      </Box>
+      </box>
 
       {/* Footer */}
-      <Box flexDirection="row" marginTop={1}>
-        <Text color={t.textMuted}>Esc = zamknij · /memory status = tekstowy odpowiednik</Text>
-      </Box>
-    </Box>
+      <box flexDirection="row" marginTop={1}>
+        <text fg={t.textMuted}>Esc = zamknij · /memory status = tekstowy odpowiednik</text>
+      </box>
+    </box>
   )
 }
 
@@ -395,37 +410,46 @@ function setupSidebar(api: TuiPluginApi, worktree: string): void {
   const timer = setInterval(refresh, 5000)
   api.lifecycle.onDispose(() => clearInterval(timer))
 
-  slots.register({
-    name: "sidebar_content",
-    render: () => {
-      const s = sess()
-      const t = theme.current
-      const blockers = s?.blockers ?? []
-      const lsp = s?.lspErrors ?? []
-      if (blockers.length === 0 && lsp.length === 0) return null
+  let tracedSidebar = false
+  const sidebarSlot: TuiSlotPlugin = {
+    slots: {
+      sidebar_content: (_ctx, _props) => {
+        try {
+        if (!tracedSidebar) { tracedSidebar = true; trace("render-sidebar_content") }
+        const s = sess()
+        const t = theme.current
+        const blockers = s?.blockers ?? []
+        const lsp = s?.lspErrors ?? []
+        if (blockers.length === 0 && lsp.length === 0) return null
 
-      return (
-        <Box flexDirection="column" padding={0}>
-          {blockers.length > 0 ? (
-            <Box flexDirection="column">
-              <Text color={t.warning} style={{ bold: true }}>blokery ({blockers.length})</Text>
-              {blockers.slice(0, 3).map((b, i) => (
-                <Text key={i} color={t.warning}>  - {b.length > 60 ? b.slice(0, 57) + "..." : b}</Text>
-              ))}
-            </Box>
-          ) : null}
-          {lsp.length > 0 ? (
-            <Box flexDirection="column" marginTop={blockers.length > 0 ? 1 : 0}>
-              <Text color={t.error} style={{ bold: true }}>LSP err ({lsp.length})</Text>
-              {lsp.slice(0, 3).map((e, i) => (
-                <Text key={i} color={t.error}>  - {e.length > 60 ? e.slice(0, 57) + "..." : e}</Text>
-              ))}
-            </Box>
-          ) : null}
-        </Box>
-      )
+        return (
+          <box flexDirection="column" padding={0}>
+            {blockers.length > 0 ? (
+              <box flexDirection="column">
+                <text fg={t.warning} attributes={1}>blokery ({blockers.length})</text>
+                {blockers.slice(0, 3).map((b, i) => (
+                  <text fg={t.warning}>  - {b.length > 60 ? b.slice(0, 57) + "..." : b}</text>
+                ))}
+              </box>
+            ) : null}
+            {lsp.length > 0 ? (
+              <box flexDirection="column" marginTop={blockers.length > 0 ? 1 : 0}>
+                <text fg={t.error} attributes={1}>LSP err ({lsp.length})</text>
+                {lsp.slice(0, 3).map((e, i) => (
+                  <text fg={t.error}>  - {e.length > 60 ? e.slice(0, 57) + "..." : e}</text>
+                ))}
+              </box>
+            ) : null}
+          </box>
+        )
+        } catch (err) {
+          trace("render-sidebar-throw", { error: String(err) })
+          return null
+        }
+      },
     },
-  })
+  }
+  slots.register(sidebarSlot)
 }
 
 // ============================================================================
@@ -433,6 +457,8 @@ function setupSidebar(api: TuiPluginApi, worktree: string): void {
 // ============================================================================
 
 const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
+  try {
+    trace("tui-enter", { worktree: api.state?.path?.worktree, directory: api.state?.path?.directory })
   const { state, theme, slots, lifecycle } = api
   const worktree = state.path.worktree
 
@@ -452,99 +478,116 @@ const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
 
   // 2: Własny ekran dashboard (route)
   setupRoute(api, worktree)
+  trace("route-registered")
 
   // 5: Sidebar enrichment (blokery + LSP)
   setupSidebar(api, worktree)
+  trace("sidebar-registered")
 
   // Existing: app_bottom status bar
-  slots.register({
-    name: "app_bottom",
-    render: () => {
-      const m = metrics()
-      const t = theme.current
+  let tracedAppBottom = false
+  const appBottomSlot: TuiSlotPlugin = {
+    slots: {
+      app_bottom: (_ctx, _props) => {
+        try {
+        const m = metrics()
+        if (!tracedAppBottom) { tracedAppBottom = true; trace("render-app_bottom", { hasMetrics: !!m, toolCalls: m?.toolCalls }) }
+        const t = theme.current
 
-      if (!m || !m.toolCalls) {
+        if (!m || !m.toolCalls) {
+          return (
+            <box flexDirection="column" flexShrink={0}>
+              <text fg={t.textMuted}>memory: idle</text>
+            </box>
+          )
+        }
+
+        const calls = m.toolCalls ?? 0
+        const saved = m.estimatedSavedTokens ?? 0
+        const reduction = m.estimatedReductionPercent ?? 0
+        const dedup = m.deduplicatedReads ?? 0
+        const arts = m.artifactsCreated ?? 0
+        const artBytes = m.artifactsBytes ?? 0
+
+        // --- Line 1: token savings (existing) ---
+        const parts1: string[] = []
+        parts1.push(`tools: ${calls}`)
+        parts1.push(`saved: ~${fmtTokens(saved)} tok`)
+        parts1.push(`${reduction.toFixed(0)}% reduc.`)
+        if (dedup > 0) parts1.push(`dedup: ${dedup}`)
+        if (arts > 0) parts1.push(`art: ${arts} (${fmtBytes(artBytes)})`)
+        const line1 = `memory: ` + parts1.join(" · ")
+
+        // --- Line 2: disk usage ---
+        const disk = m.diskBytes ?? 0
+        const diskLimit = m.diskLimitBytes ?? (200 * 1024 * 1024)
+        const diskPct = pct(disk, diskLimit)
+        const cacheBytes = m.cacheBytes ?? 0
+        const artifactsBytes = m.artifactsBytes ?? 0
+        const diskColor = diskPct >= 90 ? t.error : diskPct >= 70 ? t.warning : t.textMuted
+        const line2 = `disk: ${fmtBytes(disk)} / ${fmtBytes(diskLimit)} (${diskPct}%) · art ${fmtBytes(artifactsBytes)} · cache ${fmtBytes(cacheBytes)}`
+
+        // --- Line 3: context budget + compaction ---
+        const ctxTok = m.contextTokens ?? 0
+        const ctxLimit = m.contextLimit ?? 0
+        const ctxPct = pct(ctxTok, ctxLimit)
+        const threshold = m.compactThresholdPct ?? 80
+        const ctxColor = ctxPct >= threshold ? t.error : ctxPct >= threshold - 15 ? t.warning : t.textMuted
+        const factsTok = m.factsTokens ?? 0
+        const factsMax = m.factsMaxTokens ?? 1500
+        const factsPct = pct(factsTok, factsMax)
+        const line3 = `ctx: ${fmtTokens(ctxTok)}/${fmtTokens(ctxLimit)} tok (${ctxPct}%, compact@${threshold}%) · facts: ${fmtTokens(factsTok)}/${fmtTokens(factsMax)} (${factsPct}%) [${m.compactMode ?? "?"}]`
+
+        // --- Line 4: session + git + regression ---
+        const handoff = ageLabel(m.handoffAgeMin ?? 0)
+        const mod = m.modifiedCount ?? 0
+        const dec = m.decisionsCount ?? 0
+        const blk = m.blockersCount ?? 0
+        const head = m.headSha || "-"
+        const dirty = m.dirtyFiles ?? 0
+        const dirtyLabel = dirty > 0 ? ` (dirty:${dirty})` : ""
+        const lsp = m.lspErrorsCount ?? 0
+        const lspLabel = lsp > 0 ? ` · lsp:${lsp}err` : ""
+        const lastGood = m.lastGoodHead ? ` · last-good:${m.lastGoodHead}` : ""
+        const reverts = m.revertsCount ?? 0
+        const revertsLabel = reverts > 0 ? ` · reverts:${reverts}` : ""
+        const line4 = `handoff: ${handoff} · mod:${mod} · dec:${dec} · blk:${blk} · HEAD:${head}${dirtyLabel}${lspLabel}${lastGood}${revertsLabel}`
+
+        // --- Line 5: cache limits ---
+        const dedupC = m.dedupCacheCount ?? 0
+        const dedupM = m.dedupCacheMax ?? 500
+        const testC = m.testHistoryCount ?? 0
+        const testM = m.testHistoryMax ?? 50
+        const line5 = `dedup cache: ${dedupC}/${dedupM} · tests: ${testC}/${testM}`
+
         return (
-          <Text color={t.textMuted}>
-            memory: idle
-          </Text>
+          <box flexDirection="column" flexShrink={0}>
+            <text fg={t.textMuted}>{line1}</text>
+            <text fg={diskColor}>{line2}</text>
+            <text fg={ctxColor}>{line3}</text>
+            <text fg={t.textMuted}>{line4}</text>
+            <text fg={t.textMuted}>{line5}</text>
+          </box>
         )
-      }
-
-      const calls = m.toolCalls ?? 0
-      const saved = m.estimatedSavedTokens ?? 0
-      const reduction = m.estimatedReductionPercent ?? 0
-      const dedup = m.deduplicatedReads ?? 0
-      const arts = m.artifactsCreated ?? 0
-      const artBytes = m.artifactsBytes ?? 0
-
-      // --- Line 1: token savings (existing) ---
-      const parts1: string[] = []
-      parts1.push(`tools: ${calls}`)
-      parts1.push(`saved: ~${fmtTokens(saved)} tok`)
-      parts1.push(`${reduction.toFixed(0)}% reduc.`)
-      if (dedup > 0) parts1.push(`dedup: ${dedup}`)
-      if (arts > 0) parts1.push(`art: ${arts} (${fmtBytes(artBytes)})`)
-      const line1 = `memory: ` + parts1.join(" · ")
-
-      // --- Line 2: disk usage ---
-      const disk = m.diskBytes ?? 0
-      const diskLimit = m.diskLimitBytes ?? (200 * 1024 * 1024)
-      const diskPct = pct(disk, diskLimit)
-      const cacheBytes = m.cacheBytes ?? 0
-      const artifactsBytes = m.artifactsBytes ?? 0
-      const diskColor = diskPct >= 90 ? t.error : diskPct >= 70 ? t.warning : t.textMuted
-      const line2 = `disk: ${fmtBytes(disk)} / ${fmtBytes(diskLimit)} (${diskPct}%) · art ${fmtBytes(artifactsBytes)} · cache ${fmtBytes(cacheBytes)}`
-
-      // --- Line 3: context budget + compaction ---
-      const ctxTok = m.contextTokens ?? 0
-      const ctxLimit = m.contextLimit ?? 0
-      const ctxPct = pct(ctxTok, ctxLimit)
-      const threshold = m.compactThresholdPct ?? 80
-      const ctxColor = ctxPct >= threshold ? t.error : ctxPct >= threshold - 15 ? t.warning : t.textMuted
-      const factsTok = m.factsTokens ?? 0
-      const factsMax = m.factsMaxTokens ?? 1500
-      const factsPct = pct(factsTok, factsMax)
-      const line3 = `ctx: ${fmtTokens(ctxTok)}/${fmtTokens(ctxLimit)} tok (${ctxPct}%, compact@${threshold}%) · facts: ${fmtTokens(factsTok)}/${fmtTokens(factsMax)} (${factsPct}%) [${m.compactMode ?? "?"}]`
-
-      // --- Line 4: session + git + regression ---
-      const handoff = ageLabel(m.handoffAgeMin ?? 0)
-      const mod = m.modifiedCount ?? 0
-      const dec = m.decisionsCount ?? 0
-      const blk = m.blockersCount ?? 0
-      const head = m.headSha || "-"
-      const dirty = m.dirtyFiles ?? 0
-      const dirtyLabel = dirty > 0 ? ` (dirty:${dirty})` : ""
-      const lsp = m.lspErrorsCount ?? 0
-      const lspLabel = lsp > 0 ? ` · lsp:${lsp}err` : ""
-      const lastGood = m.lastGoodHead ? ` · last-good:${m.lastGoodHead}` : ""
-      const reverts = m.revertsCount ?? 0
-      const revertsLabel = reverts > 0 ? ` · reverts:${reverts}` : ""
-      const line4 = `handoff: ${handoff} · mod:${mod} · dec:${dec} · blk:${blk} · HEAD:${head}${dirtyLabel}${lspLabel}${lastGood}${revertsLabel}`
-
-      // --- Line 5: cache limits ---
-      const dedupC = m.dedupCacheCount ?? 0
-      const dedupM = m.dedupCacheMax ?? 500
-      const testC = m.testHistoryCount ?? 0
-      const testM = m.testHistoryMax ?? 50
-      const line5 = `dedup cache: ${dedupC}/${dedupM} · tests: ${testC}/${testM}`
-
-      return (
-        <Text color={t.textMuted}>
-          <Text color={t.textMuted}>{line1}</Text>
-          {"\n"}
-          <Text color={diskColor}>{line2}</Text>
-          {"\n"}
-          <Text color={ctxColor}>{line3}</Text>
-          {"\n"}
-          <Text color={t.textMuted}>{line4}</Text>
-          {"\n"}
-          <Text color={t.textMuted}>{line5}</Text>
-        </Text>
-      )
+        } catch (err) {
+          trace("render-app_bottom-throw", { error: String(err) })
+          return null
+        }
+      },
     },
-  })
+  }
+  const appBottomId = slots.register(appBottomSlot)
+  trace("app-bottom-registered", { id: appBottomId })
+  trace("tui-done")
+  } catch (err) {
+    trace("tui-throw", { error: String(err), stack: err instanceof Error ? err.stack : undefined })
+    throw err
+  }
 }
 
-export default MemoryTuiPlugin
-export const tui = MemoryTuiPlugin
+const plugin: TuiPluginModule & { id: string } = {
+  id: "memory-tui",
+  tui: MemoryTuiPlugin,
+}
+
+export default plugin

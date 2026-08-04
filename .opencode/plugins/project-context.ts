@@ -909,6 +909,17 @@ function writeActiveSession(s: ActiveSession) {
 
 async function gitInfo($: any): Promise<{ branch: string; head: string; modified: string[]; recentDiff: string[] }> {
   const empty = { branch: "", head: "", modified: [], recentDiff: [] }
+  // `$` (Bun shell) may be unavailable in some plugin runtimes — fall back to execSync
+  if (typeof $ !== "function") {
+    try {
+      const branch = execSync(`git -C ${JSON.stringify(worktreePath)} rev-parse --abbrev-ref HEAD`, { encoding: "utf8" }).trim() || "(detached)"
+      const head = execSync(`git -C ${JSON.stringify(worktreePath)} rev-parse --short HEAD`, { encoding: "utf8" }).trim()
+      const recentDiff = gitFilesChangedBetween("HEAD~20", "HEAD").slice(0, 20)
+      return { branch, head, modified: gitStatusPorcelain(), recentDiff }
+    } catch {
+      return empty
+    }
+  }
   try {
     const branch = (await $`git -C ${worktreePath} rev-parse --abbrev-ref HEAD`.text()).trim() || "(detached)"
     const head = (await $`git -C ${worktreePath} rev-parse --short HEAD`.text()).trim()
@@ -2060,8 +2071,9 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
           }
         } else if (type === "session.idle" || type === "session.compacted") {
           const sessionId = event?.properties?.info?.sessionID ?? lastSessionId ?? ""
-          const edits = (await $`git -C ${worktreePath} status --porcelain`.text().catch(() => ""))
-            .split("\n").filter(Boolean).map((l: string) => l.slice(3).trim())
+          // Use execSync-based helper: the Bun shell `$` may be unavailable
+          // in some plugin runtimes ("$ is not a function" crash on session.idle)
+          const edits = gitStatusPorcelain()
           const handoff = buildHandoff(sessionId, edits)
           writeActiveSession(handoff)
           // Addition 2: fold per-session trace into persistent aggregated trace
