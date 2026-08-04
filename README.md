@@ -1,6 +1,6 @@
 # opencode-project-context
 
-Lokalny plugin do [OpenCode](https://opencode.ai) ograniczający zużycie tokenów przez utrzymanie trwałej pamięci projektu per repozytorium, skracanie wyników narzędzi, deduplikację odczytów, zarządzanie budżetem kontekstu, auto-ekstrakcję faktów projektu oraz wykrywanie i cofanie regresji. Działa lokalnie, offline, bez zewnętrznych API.
+Lokalny plugin do [OpenCode](https://opencode.ai) ograniczający zużycie tokenów przez utrzymanie trwałej pamięci projektu per repozytorium, skracanie wyników narzędzi, deduplikację odczytów, zarządzanie budżetem kontekstu, auto-ekstrakcję faktów projektu oraz wykrywanie i cofanie regresji. Działa lokalnie, offline, bez zewnętrznych API. Do rozwiązywania problemu „model naprawił A, ale psuje B/C/D" służy sekcja `/regression` (lokalnie, po testach) oraz narzędzie IJFW `cross_audit` (gate na commit/PR z konsensusem 3 modeli) — porównanie w rozdziale [6. Audyt regresji wielomodelowy](#6-audyt-regresji-wielomodelowy--ijfw-cross_audit-trident).
 
 Plugin zbudowany według specyfikacji `PLUGIN.md`.
 
@@ -28,6 +28,7 @@ Plugin zbudowany według specyfikacji `PLUGIN.md`.
   - [3. Pamięć stanu testów w czasie](#3-pamięć-stanu-testów-w-czasie)
   - [4. Wykrywanie i cofanie regresji](#4-wykrywanie-i-cofanie-regresji-regression)
   - [5. Detekcja rozmiaru kontekstu i kompaktacja](#5-detekcja-rozmiaru-kontekstu-i-kompaktacja-compactmode)
+  - [6. Audyt regresji wielomodelowy — IJFW cross_audit (Trident)](#6-audyt-regresji-wielomodelowy--ijfw-cross_audit-trident)
 - [Metryki i diagnostyka](#metryki-i-diagnostyka)
 - [Rozwiązywanie problemów](#rozwiązywanie-problemów)
 
@@ -35,12 +36,33 @@ Plugin zbudowany według specyfikacji `PLUGIN.md`.
 
 ## Wymagania
 
-- [OpenCode](https://opencode.ai) z obsługą pluginów (zobacz [docs/plugins](https://opencode.ai/docs/plugins/))
-- Runtime **Bun** uruchamiający OpenCode (pluginy ładowane są automatycznie z `.opencode/plugins/`)
+- [OpenCode](https://opencode.ai) ≥ 1.18.x z obsługą pluginów (zobacz [docs/plugins](https://opencode.ai/docs/plugins/))
 - Git w repozytorium (opcjonalnie, ale zalecane — wykorzystywany do stanu pracy)
-- Dla instalacji skryptem: shell kompatybilny z POSIX (Git Bash na Windows, bash/zsh na Linuksie/macOS) — brak dodatkowych zależności
+- Dla instalacji skryptem: shell kompatybilny z POSIX (Git Bash na Windows, bash/zsh na Linuksie/macOS) oraz **npm** do instalacji zależności TUI
+- **npm** — wymagany do instalacji bibliotek runtime TUI pluginu (serwer plugin nie ma zależności zewnętrznych)
 
-Plugin to czysty TypeScript bez zewnętrznych zależności npm (używa wyłącznie API `@opencode-ai/plugin` oraz wbudowanych modułów Node: `fs`, `path`, `crypto`).
+### Dwa pluginy, dwa zestawy zależności
+
+Ten projekt zawiera **dwa osobne pluginy** o różnych wymaganiach:
+
+| Plugin | Plik | Rejestracja | Zależności npm |
+| ------ | ---- | ---------- | -------------- |
+| **Server plugin** (dedup, artefakty, regresja, fakty) | `project-context.ts` | `opencode.json` | Brak zewnętrznych — czysty TypeScript, tylko wbudowane moduły Node (`fs`, `path`, `crypto`) + API `@opencode-ai/plugin` |
+| **TUI plugin** (pasek statusu na dole ekranu) | `memory-tui.tsx` | `.opencode/tui.json` | **Wymaga bibliotek runtime:** `@opentui/solid`, `@opentui/core`, `solid-js` — instalowane przez `npm install` |
+
+> **Ważne:** TUI plugin jest konfigurowany w `.opencode/tui.json`, **nie** w `opencode.json`. Plik `opencode.json` jest configem pluginów SERWERA; `tui.json` jest configem pluginów TUI. To częsta pomyłka — jeśli wpiszesz `memory-tui.tsx` do `opencode.json`, zostanie potraktowany jako server plugin i zcrashuje (brak API `slots`, `theme`).
+
+### Zależności TUI pluginu
+
+TUI plugin importuje w runtime z trzech pakietów, które muszą być w `node_modules/` w katalogu repo (rozwiązywane w górę z `.opencode/plugins/`):
+
+| Pakiet | Wersja | Dlaczego potrzebny |
+| ------ | ------ | ----------------- |
+| `solid-js` | 1.9.12 | `createSignal`, `createMemo` — reaktywność SolidJS |
+| `@opentui/solid` | ≥ 0.5.1 | Renderer SolidJS dla OpenTUI (`<box>`, `<text>`, JSX runtime) |
+| `@opentui/core` | ≥ 0.5.1 | Natywne binaria TUI (Zig), per-platform (np. `@opentui/core-win32-x64`) |
+
+`@opencode-ai/plugin` (SDK + typy `tui.d.ts`) instalowany jest osobno w `.opencode/node_modules/` — potrzebny do typechecku (`tsc --noEmit`), nie do runtime. Skrypt instalacyjny tworzy oba pliki `package.json` i uruchamia `npm install` automatycznie.
 
 ---
 
@@ -48,7 +70,7 @@ Plugin to czysty TypeScript bez zewnętrznych zależności npm (używa wyłączn
 
 ### Opcja A: skrypt instalacyjny (zalecane)
 
-Najszybsza metoda — jeden skrypt `install.sh` kopiuje plugin, komendy, tworzy katalogi pamięci, generuje `opencode.json`, dopisuje `.gitignore` i tworzy szablon `project-facts.md`. Skrypt jest **idempotentny** — można uruchamiać wielokrotnie bez nadpisywania istniejącej konfiguracji i faktów.
+Najszybsza metoda — jeden skrypt `install.sh` kopiuje oba pluginy (server + TUI), komendy, tworzy katalogi pamięci, generuje `opencode.json` + `.opencode/tui.json` + dwa pliki `package.json`, uruchamia `npm install` (biblioteki runtime TUI + SDK), dopisuje `.gitignore` i tworzy szablon `project-facts.md`. Skrypt jest **idempotentny** — można uruchamiać wielokrotnie bez nadpisywania istniejącej konfiguracji i faktów.
 
 ```bash
 # W katalogu repozytorium, gdzie skopiowano ten projekt:
@@ -60,26 +82,37 @@ bash install.sh /sciezka/do/twojego-repo
 
 Co robi skrypt krok po kroku:
 
-1. Kopiuje `project-context.ts` → `.opencode/plugins/`
-2. Kopiuje `memory.md` i `context.md` → `.opencode/command/`
-3. Tworzy katalog `.opencode/memory/` i szablon `project-facts.md` (tylko jeśli brak)
-4. Tworzy `opencode.json` z rejestracją pluginu i konfiguracją `contextOptimizer` (tylko jeśli brak)
-5. Dopisuje brakujące wpisy do `.gitignore`
-6. Wypisuje podsumowanie z kolejnymi krokami
+1. Kopiuje `project-context.ts` → `.opencode/plugins/` (server plugin)
+2. Kopiuje `memory-tui.tsx` + `tsconfig.json` → `.opencode/plugins/` (TUI plugin)
+3. Kopiuje `memory.md`, `context.md`, `regression.md` → `.opencode/command/`
+4. Tworzy katalog `.opencode/memory/` i szablon `project-facts.md` (tylko jeśli brak)
+5. Tworzy `opencode.json` z rejestracją server pluginu i konfiguracją (tylko jeśli brak)
+6. Tworzy `.opencode/tui.json` z rejestracją TUI pluginu (tylko jeśli brak)
+7. Tworzy `package.json` (root) z zależnościami runtime TUI (`@opentui/*`, `solid-js`) — tylko jeśli brak
+8. Tworzy `.opencode/package.json` z SDK + typami dla typechecku — tylko jeśli brak
+9. Uruchamia `npm install` (root + `.opencode`) — instaluje biblioteki runtime + SDK
+10. Dopisuje brakujące wpisy do `.gitignore` (w tym `node_modules/`)
+11. Wypisuje podsumowanie z kolejnymi krokami
 
-Jeśli `opencode.json` już istnieje, skrypt nie nadpisuje go, ale ostrzega o brakujących wpisach (`plugin`, `contextOptimizer`) i podpowiada ręczną edycję. Istniejący `project-facts.md` jest zawsze zachowywany.
+Jeśli `opencode.json`, `tui.json` lub `package.json` już istnieją, skrypt ich nie nadpisuje, ale ostrzega o brakujących wpisach i podpowiada ręczną edycję. Istniejący `project-facts.md` jest zawsze zachowywany.
+
+> **Brak `memory-tui.tsx` w katalogu źródłowym:** skrypt wykrywa to i kontynuuje w trybie server-only (bez TUI). Aby zainstalować TUI plugin, upewnij się że plik `.opencode/plugins/memory-tui.tsx` istnieje obok `install.sh`.
 
 **Weryfikacja po instalacji:**
 
 ```bash
-ls .opencode/plugins/project-context.ts   # plugin
-ls .opencode/command/                       # komendy memory.md, context.md
-cat opencode.json                           # rejestracja + konfiguracja
+ls .opencode/plugins/project-context.ts   # server plugin
+ls .opencode/plugins/memory-tui.tsx       # TUI plugin
+ls .opencode/tui.json                      # rejestracja TUI
+ls node_modules/@opentui/solid             # biblioteki runtime TUI
+cat opencode.json                          # rejestracja server pluginu
 ```
 
-Następnie zrestartuj OpenCode i wpisz `/memory status`, aby potwierdzić działanie.
+Następnie zrestartuj OpenCode i wpisz `/memory status`, aby potwierdzić działanie server pluginu. Na dole ekranu TUI powinien pojawić się pasek statusu `memory: tools: ...` (TUI plugin).
 
 ### Opcja B: ręczna instalacja w istniejącym repo
+
+**Server plugin:**
 
 1. Umieść plugin w repozytorium docelowym:
 
@@ -92,6 +125,7 @@ Następnie zrestartuj OpenCode i wpisz `/memory status`, aby potwierdzić dział
 ```
 <twoje-repo>/.opencode/command/memory.md
 <twoje-repo>/.opencode/command/context.md
+<twoje-repo>/.opencode/command/regression.md
 ```
 
 3. Dodaj do `<twoje-repo>/opencode.json` sekcję rejestrującą plugin i konfigurację budżetu:
@@ -99,22 +133,79 @@ Następnie zrestartuj OpenCode i wpisz `/memory status`, aby potwierdzić dział
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["./.opencode/plugins/project-context.ts"],
-  "contextOptimizer": {
-    "enabled": true,
-    "maxProjectMemoryTokens": 1500,
-    "maxSessionHandoffTokens": 1000,
-    "maxToolResultLines": 100,
-    "maxDiffLines": 120,
-    "maxSearchMatches": 40,
-    "maxArtifactPreviewLines": 80,
-    "deduplicateReadResults": true,
-    "storeFullArtifacts": true
+  "plugin": [
+    ["./.opencode/plugins/project-context.ts", {
+      "enabled": true,
+      "maxProjectMemoryTokens": 1500,
+      "maxToolResultLines": 100,
+      "deduplicateReadResults": true,
+      "storeFullArtifacts": true,
+      "persistentDedupCache": true,
+      "autoExtractFacts": true,
+      "compactMode": "suggest"
+    }]
+  ]
+}
+```
+
+**TUI plugin (pasek statusu):**
+
+4. Skopiuj TUI plugin + tsconfig:
+
+```
+<twoje-repo>/.opencode/plugins/memory-tui.tsx
+<twoje-repo>/.opencode/plugins/tsconfig.json
+```
+
+5. Utwórz `<twoje-repo>/.opencode/tui.json` (rejestracja TUI pluginu — **nie** `opencode.json`!):
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": [
+    ["./plugins/memory-tui.tsx", { "enabled": true }]
+  ]
+}
+```
+
+6. Utwórz `<twoje-repo>/package.json` z zależnościami runtime TUI:
+
+```json
+{
+  "private": true,
+  "dependencies": {
+    "@opentui/core": "^0.5.1",
+    "@opentui/solid": "^0.5.1",
+    "solid-js": "1.9.12"
   }
 }
 ```
 
-4. Dodaj wykluczenia do `<twoje-repo>/.gitignore`:
+7. Utwórz `<twoje-repo>/.opencode/package.json` z SDK dla typechecku:
+
+```json
+{
+  "dependencies": {
+    "@opencode-ai/plugin": "1.18.10"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  }
+}
+```
+
+8. Zainstaluj zależności:
+
+```bash
+cd <twoje-repo>
+npm install                    # biblioteki runtime TUI
+cd .opencode && npm install     # SDK + typy dla typechecku
+```
+
+**Wspólne:**
+
+9. Dodaj wykluczenia do `<twoje-repo>/.gitignore`:
 
 ```gitignore
 .opencode/memory/active-session.json
@@ -123,11 +214,15 @@ Następnie zrestartuj OpenCode i wpisz `/memory status`, aby potwierdzić dział
 .opencode/memory/cache/
 .opencode/memory/index/
 .opencode/memory/plugin-errors.log
+.opencode/memory/project-facts.auto.md
+.opencode/memory/tui-trace.log
+node_modules/
+.opencode/node_modules/
 ```
 
-5. (Opcjonalnie) Utwórz plik faktów projektu `.opencode/memory/project-facts.md` — zobacz [strukturę poniżej](#project-factsmd).
+10. (Opcjonalnie) Utwórz plik faktów projektu `.opencode/memory/project-facts.md` — zobacz [strukturę poniżej](#project-factsmd).
 
-6. **Zrestartuj OpenCode**, aby plugin i komendy zostały załadowane. Konfiguracja nie przeładowuje się na gorąco.
+11. **Zrestartuj OpenCode**, aby pluginy i komendy zostały załadowane. Konfiguracja nie przeładowuje się na gorąco.
 
 ### Opcja C: globalny plugin (wszystkie projekty)
 
@@ -143,7 +238,9 @@ Plugin tworzy i utrzymuje następujący układ w repozytorium:
 <repo>/
   .opencode/
     plugins/
-      project-context.ts          # kod pluginu (wersjonowany)
+      project-context.ts          # server plugin (wersjonowany)
+      memory-tui.tsx              # TUI plugin — pasek statusu (wersjonowany)
+      tsconfig.json               # typecheck config dla memory-tui.tsx (wersjonowany)
     command/
       memory.md                   # komenda /memory
       context.md                  # komenda /context
@@ -165,7 +262,11 @@ Plugin tworzy i utrzymuje następujący układ w repozytorium:
       index/
         files.json                # indeks plików (gitignore)
       plugin-errors.log           # log błędów fail-open (gitignore)
-  opencode.json                   # rejestracja + konfiguracja
+    tui.json                       # rejestracja TUI pluginu (wersjonowany)
+    node_modules/                  # SDK + typy (gitignore)
+  opencode.json                   # rejestracja server pluginu + konfiguracja
+  package.json                    # zależności runtime TUI (gitignore lub wersjonowany)
+  node_modules/                    # biblioteki TUI runtime (gitignore)
   .gitignore
 ```
 
@@ -554,6 +655,53 @@ Przywraca pliki do wersji z last-good (`git checkout <last-good-sha> -- <file>`)
 
 **Bezpieczeństwo:** Plugin **nigdy** nie wykonuje `git reset --hard` ani `git clean`. `stash` jest operacją odwracalną (`git stash pop`). `checkout <sha> -- <file>` nadpisuje tylko wskazane pliki i można to cofnąć przez `git checkout HEAD -- <file>` lub `git restore`. W trybie `regressionSafeRevertOnly: false` pojedynczy plik przywracany jest bez potwierdzenia — używać ostrożnie.
 
+#### Typowy workflow: „model naprawił A, ale zepsuł B, C, D"
+
+To klasyczny scenariusz dla `/regression`: agent dostaje zgłoszenie o błędzie w module A, poprawia go, ale przy okazji dotyka modułów B/C/D i łamie je. Plugin powiąże regresję ze zmianami lokalnie, bez LLM.
+
+```text
+1. Uruchom testy (cały suite, nie tylko testy modułu A):
+   $ pytest -q
+
+   Plugin zapisuje wpis do test-history.json:
+     timestamp=2026-08-04T12:30Z  exit=1
+     failed: tests/test_retry.py::test_retry_delay
+     HEAD: e4f5a6b
+
+2. /regression last-good
+   Pokazuje okno regresji:
+     Last good:  2026-08-04T11:00Z  exit=0   HEAD: a1b2c3d
+     First red:  2026-08-04T12:30Z  exit=1   HEAD: e4f5a6b
+     Failing test: tests/test_retry.py::test_retry_delay
+
+   Pokażę różnicę: commit e4f5a6b (= fix w module A) zepsuł test_retry.
+
+3. /regression suspect
+   Scala podejrzane pliki z 3 źródeł:
+     - stan roboczy git status (waga 100)
+     - git diff a1b2c3d..e4f5a6b (waga 50)
+     - trace edycji sesji (waga = licznik edycji)
+   Sortuje wg prawdopodobieństwa winy, np.:
+     1. src/radio/backoff.c      # dotknięty "przy okazji", łamie test_retry
+     2. src/radio/retry.c        # cel zmiany — testy retry jeszcze działają
+     3. tests/test_retry.py
+   Nie modyfikuje plików — tylko diagnozuje.
+
+4. /regression revert <podejrzany plik>
+   W trybie bezpiecznym (domyślnym) prosi o potwierdzenie:
+     /regression revert confirm src/radio/backoff.c
+   Wykonuje: git checkout a1b2c3d -- src/radio/backoff.c
+   (cofnięcie: git checkout HEAD -- src/radio/backoff.c)
+
+5. Uruchom testy ponownie, by potwierdzić:
+   $ pytest -q tests/test_retry.py
+   Jeśli zielono — winny plik znaleziony. Jeśli czerwono:
+     - /regression revert stash   (odkładając wszystkie zmiany, odwracalne)
+     - lub powtarzaj krok 4 dla kolejnego podejrzanego pliku
+```
+
+**Kluczowa zasada:** uruchom pełen suite testów (a nie tylko testy zmienianego modułu) przed i po zmianie — tylko wtedy `test-history.json` zawiera pełne okno regresji i komendy `/regression` potrafią wskazać winowajcę.
+
 ### Szybkie przykłady
 
 ```
@@ -773,6 +921,123 @@ Plugin śledzi rozmiar kontekstu sesji na podstawie `AssistantMessage.tokens.inp
 
 Komendy: `/memory compact-status`, `/memory compact-now`, `/memory compact-reset`. Stan pokazywany też w `/memory status` i `/context budget`.
 
+### 6. Audyt regresji wielomodelowy — IJFW cross_audit (Trident)
+
+Odrębne narzędzie od systemu **IJFW Memory MCP** (katalog `.ijfw/` w repo, nie mylić z pluginem `project-context`). Służy do wykrywania i naprawiania regresji wprowadzonych przez commit lub zakres commitów, z użyciem konsensusu 3 niezależnych modeli LLM. To **gate po commicie/PR**, nie monitor na żywo.
+
+#### Kiedy stosować
+
+Scenariusz klasyczny: model naprawił funkcjonalność A, ale psuje B, C, D. Lokalne `/regression` wymaga padającego testu, by powiązać winowajcę. Gdy testów brak, są one flaky, albo zmiana łamie coś, czego test nie pokrywa (UX, semantyka API, regresja wydajności), `/regression` nie wskaże winy. Wtedy stosuje się `cross_audit` — model czyta diff i ocenia, czy zmiana nie psuje kodu poza zakresem intencji.
+
+#### Wywołanie
+
+Narzędzie MCP `ijfw_cross_audit_converge` z jednym wymaganym argumentem:
+
+```json
+{
+  "commitRange": "HEAD~1..HEAD",
+  "lenses": ["codex", "gemini", "claude"],
+  "maxIterations": 3,
+  "autoFix": false
+}
+```
+
+| Parametr       | Wymagany | Domyślnie                       | Opis                                                         |
+| -------------- | -------- | ------------------------------- | ------------------------------------------------------------ |
+| `commitRange`  | tak      | —                               | Zakres git do audytu, np. `HEAD~1..HEAD`, `main..feature/x`  |
+| `lenses`       | nie      | `["codex","gemini","claude"]`   | Lista modeli (lenses) do uruchomienia równolegle            |
+| `maxIterations`| nie      | `3` (cap 10)                    | Limit iteracji konwergencji; `1` = single-shot               |
+| `autoFix`      | nie      | `false`                         | Opt-in: auto-poprawia błędy o zbieżności 2+ modeli           |
+
+Zwraca: `{ verdict, iterations, findings, divergence?, stalled? }`. `verdict` ∈ `PASS | CONDITIONAL | FAIL | consensus_failed | UNREACHABLE`.
+
+#### Jak działa — krok po kroku
+
+```text
+1. Dispatch równoległy
+   Wszystkie lensy (codex, gemini, claude) dostają ten sam diff z commitRange
+   i oceniają niezależnie: czy zmiana spełnia intencję i nie łamie niczego poza zakresem.
+
+2. Zbieranie findings
+   Każdy lens zwraca listę findings (HIGH/MEDIUM/LOW) z lokalizacją plik:linia,
+   opisem problemu i sugerowaną poprawką.
+
+3. Detekcja rozbieżności (divergence)
+   Jeśli lensy nie zgadzają się co do werdyktu lub findings,
+   uruchamiana jest iteracja konwergencji:
+     - generowany jest podsumowanie dotychczasowych rozbieżności
+     - lensy ponownie oceniają diff z tym podsumowaniem
+   Pętla trwa do osiągnięcia konsensusu lub maxIterations.
+
+4. Werdykt zbieżności
+   PASS — żaden lens nie zgłosił HIGH, intencja spełniona
+   CONDITIONAL — są findings MEDIUM/LOW do rozpatrzenia
+   FAIL — 2+ lensy zgodne co do HIGH; regresja potwierdzona
+   consensus_failed — po maxIterations lensy nadal się rozchodzą (wymaga człowieka)
+   UNREACHABLE — błąd infrastruktury/dispatch
+
+5. autoFix (opt-in, domyślnie wyłączone)
+   Jeśli autoFix: true i werdykt != PASS, uruchamiany jest atomic per-finding fix loop:
+     - bierze tylko HIGH findings, na które zgodziły się 2+ lensy
+     - stosuje jedną poprawkę = jeden revertowalny git commit
+     - dotyka maksymalnie 10 różnych plików na uruchomienie (po tym stop)
+     - ograniczenie path-containment: nie pisze poza rootem audytowanego projektu
+     - BUGI LOGICZNE NIE SĄ AUTOPOPRAWIANE — tylko oczywiste regresje, logiczne zostają człowiekowi
+   Wynik autoFix pojawia się w result.autoFix; werdykt audytu się nie zmienia.
+```
+
+#### Typowy workflow: „model naprawił A, ale zepsuł B, C, D"
+
+```text
+1. Agent commituje zmianę naprawiającą moduł A.
+   git commit -m "fix: A retry backoff"
+
+2. Uruchom audyt na zakresie commitu:
+   commitRange: "HEAD~1..HEAD"
+   autoFix: false (najpierw tylko czytamy)
+
+3. Interpretuj werdykt:
+   PASS         — zmiana czysta, zatwierdź PR
+   CONDITIONAL  — przejrzyj findings w polu `findings`, zdecyduj ręcznie
+   FAIL         — regresja potwierdzona przez 2+ modele
+                   → sprawdź result.findings dla lokalizacji plik:linia
+                   → uruchom ponownie z autoFix: true, by automatycznie poprawić HIGH
+                      (tylko te, na które zgodziły się 2+ modeli)
+   consensus_failed — rozbierzność trwała, zbadaj `divergence` i `iterations` ręcznie
+
+4. Jeśli autoFix poprawił:
+   - przejrzyj wygenerowane commity (każdy revertowalny)
+   - uruchom testy + pełen suite regresji
+   - uruchom audyt ponownie na nowym commitRange, by potwierdzić PASS
+```
+
+**Ważne ograniczenia autoFix:**
+
+- Modyfikuje pliki w repo bez pytania (to cel) — ale każda poprawka to osobny, revertowalny commit
+- Nie poprawia bugów logicznych (deferred to humans)
+- Maks. 10 różnych plików na uruchomienie; powyżej tego stopuje i raportuje zamiast masowo nadpisywać
+- Nie pisze poza rootem audytowanego projektu (path-containment guard)
+
+#### Porównanie: `/regression` vs `ijfw_cross_audit_converge`
+
+| Cecha                 | `/regression` (plugin)                          | `ijfw_cross_audit_converge` (IJFW MCP)                 |
+| --------------------- | ----------------------------------------------- | ------------------------------------------------------ |
+| Tryb działania        | lokalne, offline, przez `git`                   | MCP, wymaga LLM API (3 modele równolegle)             |
+| Sygnał wejściowy      | padający test (`test-history.json` + git SHA)   | diff z commitRange (nie wymaga testu)                  |
+| Wykrywa               | który plik/commit zepsuł konkretny test          | czy zmiana psuje cokolwiek poza intencją (UX, API, semantyka) |
+| Wymaga testów         | **tak** — bez testów nie ma okna regresji        | **nie** — model czyta diff                              |
+| Modyfikuje pliki      | tylko na żądanie (`revert`, z potwierdzeniem)   | tylko gdy `autoFix: true` (opt-in, revertowalne commity) |
+| Koszt                 | zero (lokalne)                                   | wywołania 3 modeli × iteracje konwergencji              |
+| Werdykt               | lista podejrzanych plików                        | PASS / CONDITIONAL / FAIL / consensus_failed            |
+| Kiedy stosować        | masz testy i padają, chcesz wskazać winowajcę    | gate na PR/commit, brak testów lub pokrycia, regresja semantyczna |
+| Offline               | tak                                             | nie                                                    |
+
+**Kiedy którego:**
+
+- `/regression` — gdy masz padający test i chcesz lokalnie wskazać winny plik bez kosztu LLM
+- `cross_audit` — gdy testów brak, są flaky, lub regresja jest semantyczna (UX, API, wydajność); jako gate na PR przed mergem
+- Można łączyć: najpierw `cross_audit` na PR (wykrycie), a jeśli werdykt FAIL i są testy — `/regression suspect` dla dokładnej lokalizacji
+
 ---
 
 ## Metryki i diagnostyka
@@ -808,6 +1073,8 @@ Błędy pluginu logowane są w `.opencode/memory/plugin-errors.log`. Plugin dzia
 
 ## Rozwiązywanie problemów
 
+### Server plugin (`/memory`, `/context`, `/regression`)
+
 | Objaw                                     | Rozwiązanie                                                                                  |
 | ----------------------------------------- | -------------------------------------------------------------------------------------------- |
 | Plugin się nie ładuje                    | Sprawdź ścieżkę w `opencode.json` (`plugin: ["./.opencode/plugins/project-context.ts"]`) i zrestartuj OpenCode |
@@ -822,6 +1089,36 @@ Błędy pluginu logowane są w `.opencode/memory/plugin-errors.log`. Plugin dzia
 | `/regression revert` prosi o `confirm`      | Tryb bezpieczny (`regressionSafeRevertOnly: true`); wpisz `/regression revert confirm <plik>` lub ustaw `false` |
 | Po restarcie deduplikacja nie działa        | Sprawdź `persistentDedupCache: true` i istnienie `.opencode/memory/cache/dedup-seen.json` |
 
+### TUI plugin (pasek statusu na dole ekranu)
+
+Pasek TUI nie pojawia się, albo pojawia się błąd? Diagnoza krok po kroku:
+
+| Objaw | Przyczyna | Rozwiązanie |
+| ----- | --------- | ----------- |
+| Brak paska, brak błędów w logu | TUI plugin NIE zarejestrowany — wpis w `opencode.json` zamiast `.opencode/tui.json` | Przenieś wpis do `.opencode/tui.json` (format: `"plugin": [["./plugins/memory-tui.tsx", { "enabled": true }]]`). `opencode.json` jest tylko dla server pluginów. |
+| Brak paska + `Plugin export is not a function` w logu | Plik `.tsx` wpisany do `opencode.json` jako server plugin | Jak wyżej — TUI pluginy idą do `tui.json`, NIE do `opencode.json`. |
+| Brak paska po poprawnej rejestracji | Brak bibliotek runtime: `@opentui/solid`, `solid-js` | Uruchom `npm install` w katalogu repo (root `package.json` musi mieć zależności TUI). Sprawdź: `ls node_modules/@opentui/solid node_modules/solid-js`. |
+| Brak paska, plugin-meta.json nie ma wpisu `memory-tui` | Moduł się nie załadował (błąd importu cichy) | Sprawdź `.opencode/memory/tui-trace.log` (jeśli istnieje — plugin ma wbudowane logowanie śladu). Brak pliku = import failed przed wykonaniem kodu. |
+| Pasek był, zniknął po edycji pluginu | TUI cache — opencode może cacheować moduł | Pełny restart OpenCode (exit + `opencode --continue`). Konfiguracja TUI nie przeładowuje się na gorąco. |
+| `tsc` błędy w `memory-tui.tsx` | Brak SDK/typów w `.opencode/node_modules/` | `cd .opencode && npm install` (tworzy `@opencode-ai/plugin` z `tui.d.ts`). |
+| Błąd `failed to load plugin: solid-stub.d.ts` | Pozostały plik-stub w `.opencode/plugins/` skanowany przez auto-discovery server pluginów | Usuń `solid-stub.d.ts` z `.opencode/plugins/` (nie jest potrzebny — realny `@opentui/solid` jest w `node_modules/`). |
+
+**Diagnostyka TUI — plik śladu:** Plugin zawiera wbudowane logowanie diagnostyczne do `.opencode/memory/tui-trace.log` (gitignored). Po restarcie OpenCode plik pokazuje kolejne fazy ładowania:
+
+```
+2026-08-04T13:47:06.403Z module-eval              ← moduł zaimportowany OK
+2026-08-04T13:47:06.432Z tui-enter {...}          ← aktywacja tui() rozpoczęta
+2026-08-04T13:47:06.432Z route-registered
+2026-08-04T13:47:06.432Z sidebar-registered
+2026-08-04T13:47:06.433Z app-bottom-registered     ← slot zarejestrowany
+2026-08-04T13:47:06.433Z tui-done                 ← aktywacja OK (brak throw)
+2026-08-04T13:47:06.486Z render-app_bottom {...}   ← host renderuje slot z danymi
+```
+
+Jeśli ślad kończy się na `module-eval` bez `tui-enter` — aktywacja się nie uruchomiła (plugin wyłączony w KV/`plugin_enabled`). Jeśli brak `render-app_bottom` — host nie renderuje slotu (sprawdź wersję OpenCode ≥ 1.18). Jeśli jest `tui-throw` lub `render-*-throw` — błąd w kodzie pluginu (zobacz `error` w śladzie).
+
+**Plugin manager TUI:** Wewnątrz OpenCode otwórz paletę komend (domyślnie `Ctrl+P`) → wpisz „Plugins" → lista pokazuje każdy plugin z jego stanem `enabled`/`active`. `memory-tui` powinien być widoczny z `active=true`. Jeśli `active=false` mimo `enabled=true` — aktywacja zcrashowała (zobacz ślad).
+
 ### Modyfikacja pluginu
 
 Plugin jest jednym plikiem TypeScript. Wszelkie reguły (filtry, maskowanie, limity, wzorce komend build/test) można dostosować bezpośrednio w `.opencode/plugins/project-context.ts`, a następnie zrestartować OpenCode.
@@ -835,4 +1132,4 @@ Plugin jest jednym plikiem TypeScript. Wszelkie reguły (filtry, maskowanie, lim
 
 ## Licencja i status
 
-Plugin jest prototypem MVP zgodnym z etapami 1–3 specyfikacji `PLUGIN.md`, rozszerzonym o trwały cache LRU, auto-ekstrakcję faktów, pamięć stanu testów oraz wykrywanie/cofanie regresji. Brak zależności sieciowych, brak telemetrii, brak zewnętrznego LLM. Wszystkie operacje lokalne.
+Plugin jest prototypem MVP zgodnym z etapami 1–3 specyfikacji `PLUGIN.md`, rozszerzonym o trwały cache LRU, auto-ekstrakcję faktów, pamięć stanu testów oraz wykrywanie/cofanie regresji. Server plugin (`project-context.ts`) nie ma zewnętrznych zależności npm — czysty TypeScript z wbudowanymi modułami Node. TUI plugin (`memory-tui.tsx`) wymaga bibliotek runtime `@opentui/solid` + `@opentui/core` + `solid-js` (instalowane przez `npm install`). Brak zależności sieciowych, brak telemetrii, brak zewnętrznego LLM. Wszystkie operacje lokalne.
