@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSy
 import { join, relative, resolve, basename } from "node:path"
 import { createHash } from "node:crypto"
 import { execSync } from "node:child_process"
+import { tmpdir } from "node:os"
 import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 
@@ -1478,6 +1479,268 @@ function gitCheckoutFileFromSha(sha: string, file: string): string {
   }
 }
 
+// --- Feature marks via git notes ----------------------------------------------
+// Feature = zdefiniowana nazwa opcji/mechanizmu. Oznaczenie „działa poprawnie"
+// zapisujemy jako notę (git notes) na konkretnym commicie, więc znika potrzeba
+// przepisywania historii — punkt odniesienia = commit, na którym feature został
+// oznaczony. Notesy kumulujemy przez `git notes append` (jedna nota na commit).
+
+function gitNotesAppend(sha: string, message: string): string {
+  // Uwaga (Windows): przekazywanie nowych linii przez -m nie jest pewne (shell
+  // zamienia je na literalne \n). Dlatego nota idzie przez plik tymczasowy (-F).
+  const tmpFile = join(tmpdir(), `opencode-note-${createHash("sha1").update(sha + Date.now()).digest("hex").slice(0, 16)}.txt`)
+  try {
+    writeFileSync(tmpFile, message, "utf8")
+    execSync(
+      `git -C ${JSON.stringify(worktreePath)} notes append -F ${JSON.stringify(tmpFile)} ${sha}`,
+      { encoding: "utf8", stdio: "pipe" },
+    )
+    return `Oznaczono ${sha.slice(0, 7)}.`
+  } catch (e: any) {
+    return `git notes append failed: ${e?.message ?? e}`
+  } finally {
+    try { unlinkSync(tmpFile) } catch { /* ignore */ }
+  }
+}
+
+function gitNotesShow(sha: string): string {
+  try {
+    return execSync(
+      `git -C ${JSON.stringify(worktreePath)} notes show ${sha}`,
+      { encoding: "utf8", stdio: "pipe" },
+    ).trim()
+  } catch {
+    return ""
+  }
+}
+
+// Zwraca listę { note, commit } — commitów, które mają noty w refs/notes/commits.
+function gitNotesList(): { note: string; commit: string }[] {
+  try {
+    const out = execSync(`git -C ${JSON.stringify(worktreePath)} notes list`, { encoding: "utf8", stdio: "pipe" })
+    return out
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => {
+        const [note, commit] = l.trim().split(/\s+/)
+        return { note: note ?? "", commit: commit ?? "" }
+      })
+      .filter((x) => x.commit)
+  } catch {
+    return []
+  }
+}
+
+// commitSha -> { date, subject } dla wszystkich commitów (także na innych gałęziach).
+function gitLogMap(): Record<string, { date: string; subject: string }> {
+  const map: Record<string, { date: string; subject: string }> = {}
+  try {
+    const out = execSync(
+      `git -C ${JSON.stringify(worktreePath)} log --all --format=%H%x09%ct%x09%s`,
+      { encoding: "utf8", stdio: "pipe" },
+    )
+    for (const l of out.split("\n").filter(Boolean)) {
+      const [sha, ct, ...rest] = l.split("\t")
+      if (!sha) continue
+      map[sha] = {
+        date: new Date(Number(ct) * 1000).toISOString(),
+        subject: rest.join("\t"),
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return map
+}
+
+function gitDiffText(fromSha: string, toSha: string): string {
+  try {
+    return execSync(
+      `git -C ${JSON.stringify(worktreePath)} diff --stat --patch ${fromSha}..${toSha}`,
+      { encoding: "utf8", stdio: "pipe" },
+    )
+  } catch (e: any) {
+    return `git diff failed: ${e?.message ?? e}`
+  }
+}
+
+// --- Feature registry (lokalna definicja feature'ów) --------------------------
+
+type FeatureDef = { name: string; description: string; createdAt: string }
+
+function featuresPath(): string {
+  return join(memoryDir, "cache", "features.json")
+}
+
+function readFeatures(): Record<string, FeatureDef> {
+  return readJson<Record<string, FeatureDef>>(featuresPath()) ?? {}
+}
+
+function writeFeatures(features: Record<string, FeatureDef>) {
+  writeJson(featuresPath(), features)
+}
+
+// Parseuje noty (append kumuluje bloki rozdzielone pustą linią) i zwraca listę
+// oznaczeń: { feature, status, sha, date, note, commit }.
+function parseFeatureMarks(): {
+  feature: string
+  status: string
+  sha: string
+  date: string
+  note: string
+  commit: string
+}[] {
+  const logMap = gitLogMap()
+  const out: { feature: string; status: string; sha: string; date: string; note: string; commit: string }[] = []
+  for (const { commit } of gitNotesList()) {
+    const text = gitNotesShow(commit)
+    if (!text) continue
+    for (const block of text.split(/\n\n+/)) {
+      const feature = block.match(/^feature:(\S+)$/m)?.[1]
+      if (!feature) continue
+      const status = block.match(/^status=(\S+)$/m)?.[1] ?? ""
+      const sha = block.match(/^sha=(\S+)$/m)?.[1] ?? ""
+      out.push({
+        feature,
+        status,
+        sha,
+        date: logMap[commit]?.date ?? "",
+        note: block,
+        commit,
+      })
+    }
+  }
+  return out
+}
+
+// Znajdź najnowszy commit (wg daty commita), na którym feature był oznaczony ok.
+function lastKnownGoodForFeature(name: string): { commit: string; date: string; sha: string; note: string } | null {
+  const marks = parseFeatureMarks().filter((m) => m.feature === name && m.status === "ok")
+  if (!marks.length) return null
+  let best: (typeof marks)[number] | null = null
+  for (const m of marks) {
+    if (!best || m.date > best.date) best = m
+  }
+  if (!best) return null
+  return { commit: best.commit, date: best.date, sha: best.sha, note: best.note }
+}
+
+// --- /regression feature: definiowanie i weryfikacja feature'ów ---------------
+
+function regressionFeature(args: string): string {
+  const parts = args.trim().split(/\s+/).filter(Boolean)
+  const sub = parts[0] ?? ""
+  const rest = parts.slice(1).join(" ")
+
+  if (sub === "add") {
+    const name = parts[1] ?? ""
+    if (!name) return "Użycie: /regression feature add <nazwa> [opis]"
+    const features = readFeatures()
+    if (features[name]) return `Feature "${name}" już istnieje. Użyj /regression feature list.`
+    features[name] = { name, description: rest.replace(/^[^ ]+/, "").trim(), createdAt: new Date().toISOString() }
+    writeFeatures(features)
+    return `Dodano feature "${name}".\nAby oznaczyć go jako działający na HEAD: /regression feature mark ${name}`
+  }
+
+  if (sub === "list") {
+    const features = readFeatures()
+    const entries = Object.values(features)
+    if (!entries.length) return "Brak zdefiniowanych feature'ów. Użyj: /regression feature add <nazwa> [opis]"
+    const lines = ["=== Zdefiniowane feature'y ==="]
+    for (const f of entries) {
+      const known = lastKnownGoodForFeature(f.name)
+      lines.push(`- ${f.name}${f.description ? ` — ${f.description}` : ""} [${known ? `ok @ ${known.commit.slice(0, 7)}` : "nieoznaczony"}]`)
+    }
+    return lines.join("\n")
+  }
+
+  if (sub === "mark") {
+    const name = parts[1] ?? ""
+    if (!name) return "Użycie: /regression feature mark <nazwa> [uwaga]"
+    const features = readFeatures()
+    if (!features[name]) {
+      return `Nieznany feature "${name}". Najpierw go zdefiniuj: /regression feature add ${name}`
+    }
+    const head = getHeadSha()
+    if (!head) return "Nie udało się odczytać HEAD."
+    const existing = gitNotesShow(head)
+    const already = existing.split(/\n\n+/).some((b) => b.includes(`feature:${name}`) && b.includes("status=ok") && b.includes(`sha=${head}`))
+    if (already) return `Feature "${name}" jest już oznaczony jako działający na HEAD (${head.slice(0, 7)}).`
+    const userNote = rest.replace(/^[^ ]+/, "").trim().replace(/\s+/g, " ")
+    const msg = [
+      `feature:${name}`,
+      `status=ok`,
+      `sha=${head}`,
+      `date=${new Date().toISOString()}`,
+      userNote ? `note=${userNote}` : "",
+    ].filter(Boolean).join("\n")
+    const res = gitNotesAppend(head, msg)
+    return `${res}\nFeature "${name}" oznaczony jako DZIAŁAJĄCY na commicie ${head.slice(0, 7)}.`
+  }
+
+  if (sub === "check") {
+    const name = parts[1] ?? ""
+    if (!name) return "Użycie: /regression feature check <nazwa>"
+    const features = readFeatures()
+    if (!features[name]) {
+      return `Nieznany feature "${name}". Najpierw go zdefiniuj: /regression feature add ${name}`
+    }
+    const head = getHeadSha()
+    const known = lastKnownGoodForFeature(name)
+    const lines: string[] = [`=== Feature: ${name} ===`]
+    if (features[name].description) lines.push(`Opis: ${features[name].description}`)
+
+    if (!known) {
+      lines.push("Ten feature NIGDY nie był oznaczony jako działający w środowisku docelowym.")
+      lines.push(`Aby to zrobić po weryfikacji: /regression feature mark ${name}`)
+      return lines.join("\n")
+    }
+
+    const knownShort = known.commit.slice(0, 7)
+    if (known.commit === head) {
+      lines.push(`Oznaczony jako DZIAŁAJĄCY w HEAD (${knownShort}, ${known.date.slice(0, 19).replace("T", " ")}).`)
+      lines.push("Brak zmian od ostatniej weryfikacji — brak podejrzeń o regresję.")
+      return lines.join("\n")
+    }
+
+    const logMap = gitLogMap()
+    const knownSubject = logMap[known.commit]?.subject ?? "(brak tematu)"
+    const commits = gitCommitsBetween(known.commit, head)
+    const files = gitFilesChangedBetween(known.commit, head)
+    const diff = truncateLines(gitDiffText(known.commit, head), 200)
+
+    lines.push(`Ostatnio oznaczony jako DZIAŁAJĄCY: ${knownShort} (${knownSubject}, ${known.date.slice(0, 19).replace("T", " ")})`)
+    lines.push(`Okno zmian: ${knownShort}..HEAD — ${commits.length} commitów, ${files.length} plików`)
+    lines.push("")
+    lines.push("Commity w oknie:")
+    for (const c of commits.slice(0, 20)) lines.push(`  ${c}`)
+    lines.push("")
+    lines.push("Zmienione pliki:")
+    for (const f of files.slice(0, 40)) lines.push(`  ${f}`)
+    lines.push("")
+    lines.push("=== Prompt dla modelu kodującego ===")
+    lines.push(`Mam feature "${name}"${features[name].description ? ` (${features[name].description})` : ""}, który był `)
+    lines.push(`oznaczony jako działający poprawnie w commicie ${knownShort} (${knownSubject}, ${known.date}).`)
+    lines.push(`Od tego commita do HEAD (${commits.length} commitów, ${files.length} plików) wprowadzono zmiany, `)
+    lines.push(`które mogły spowodować regresję. Przeanalizuj TYLKO zmiany poniżej i wskaż, która z nich `)
+    lines.push(`mogła złamać feature "${name}" — nie analizuj całego kodu.`)
+    lines.push("")
+    lines.push("Zmiany (diff):")
+    lines.push("```diff")
+    lines.push(diff || "(brak diffa)")
+    lines.push("```")
+    return lines.join("\n")
+  }
+
+  return [
+    "Użycie: /regression feature <podkomenda>",
+    "  add <nazwa> [opis]        — zdefiniuj feature",
+    "  list                      — lista zdefiniowanych feature'ów + status",
+    "  mark <nazwa> [uwaga]      — oznacz feature jako działający na HEAD (git notes)",
+    "  check <nazwa>             — sprawdź czy był oznaczony; pokaż zmiany od znanego-dobrego commita + prompt dla modelu",
+  ].join("\n")
+}
+
 // Znajdź „last good run" i „first red run" po pierwszym niepustymfailed test name.
 // lastGood: ostatni uruchomienie z exit=0 (lub failed puste) przed pierwszym red.
 // firstRed: pierwsze uruchomienie z exit!=0 z failed testem, którego wcześniej nie było.
@@ -2776,6 +3039,7 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
         else if (cmd.startsWith("/regression last-good")) output.result = regressionLastGood()
         else if (cmd.startsWith("/regression suspect")) output.result = regressionSuspect()
         else if (cmd.startsWith("/regression revert")) output.result = regressionRevert(cmd.replace(/^\/regression revert\s*/, ""))
+        else if (cmd.startsWith("/regression feature")) output.result = regressionFeature(cmd.replace(/^\/regression feature\s*/, ""))
       }, "tui.command.execute")
     },
   }

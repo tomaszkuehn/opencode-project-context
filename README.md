@@ -727,6 +727,19 @@ Przywraca pliki do wersji z last-good (`git checkout <last-good-sha> -- <file>`)
 
 **Bezpieczeństwo:** Plugin **nigdy** nie wykonuje `git reset --hard` ani `git clean`. `stash` jest operacją odwracalną (`git stash pop`). `checkout <sha> -- <file>` nadpisuje tylko wskazane pliki i można to cofnąć przez `git checkout HEAD -- <file>` lub `git restore`. W trybie `regressionSafeRevertOnly: false` pojedynczy plik przywracany jest bez potwierdzenia — używać ostrożnie.
 
+#### `/regression feature <add|list|mark|check>`
+
+Punkt odniesienia dla opcji, które działają **w środowisku docelowym** — tam, gdzie „testy przechodzą, ale realny feature nie działa". Feature definiujesz raz, a po weryfikacji w środowisku oznaczasz go jako działający na bieżącym commicie (`git notes`). Nota siedzi na commicie, więc historia pozostaje nienaruszona, a punkt odniesienia nie ginie po commicie zmian.
+
+| Komenda                          | Działanie                                                                  |
+| -------------------------------- | -------------------------------------------------------------------------- |
+| `/regression feature add <nazwa> [opis]` | Definiuje feature (zapis do `.opencode/memory/cache/features.json`) |
+| `/regression feature list`       | Lista feature'ów + status: `ok @ <sha>` (ostatnio oznaczony) / `nieoznaczony` |
+| `/regression feature mark <nazwa> [uwaga]` | Oznacza feature jako **działający** na HEAD (`git notes append` — wielokrotne marki kumulują się w jednej nocie) |
+| `/regression feature check <nazwa>` | Znajduje ostatni commit, na którym feature był oznaczony jako działający; pokazuje okno zmian od tego commita do HEAD (commity, pliki, diff) **oraz gotowy prompt dla modelu kodującego** — model dostaje tylko zmiany w oknie, nie cały kod |
+
+**Workflow:** po zweryfikowaniu w środowisku docelowym, że np. opcja `retry-delay` działa → `/regression feature mark retry-delay`. Gdy później opcja padnie mimo zielonych testów → `/regression feature check retry-delay` pokazuje dokładnie, jakie zmiany od znanego-dobrego commita mogły ją złamać, i daje prompt gotowy do wklejenia modelowi. 
+
 #### Typowy workflow: „model naprawił A, ale zepsuł B, C, D"
 
 To klasyczny scenariusz dla `/regression`: agent dostaje zgłoszenie o błędzie w module A, poprawia go, ale przy okazji dotyka modułów B/C/D i łamie je. Plugin powiąże regresję ze zmianami lokalnie, bez LLM.
