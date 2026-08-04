@@ -3,7 +3,8 @@ import { readFileSync, existsSync, readdirSync, statSync, appendFileSync, mkdirS
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createSignal, createMemo } from "solid-js"
-import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiSlotPlugin } from "@opencode-ai/plugin/tui"
+import { useKeyboard } from "@opentui/solid"
+import type { TuiPlugin, TuiPluginApi, TuiPluginModule, TuiSlotPlugin, TuiCommand } from "@opencode-ai/plugin/tui"
 
 // --- TRACE (tymczasowe, do usunięcia po diagnozie) ---
 const TRACE_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "memory")
@@ -230,6 +231,20 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
   const timer = setInterval(refresh, 3000)
   // Cleanup interval on plugin teardown — prevents timer leak when route unmounts.
   api.lifecycle.onDispose(() => clearInterval(timer))
+
+  // Esc/q = zamknij dashboard i wróć na poprzedni route.
+  // useKeyboard jest globalne (renderer.keyInput) — działa bez fokusu, włączając
+  // przypadki gdy dashboard nie ma focusowalnych elementów.
+  useKeyboard((key) => {
+    if (key.name === "escape" || key.name === "q") {
+      try {
+        api.route.navigate("home")
+        trace("dashboard-close-key", { key: key.name })
+      } catch (err) {
+        trace("dashboard-close-throw", { error: String(err) })
+      }
+    }
+  })
 
   const m = createMemo(() => metrics())
   const s = createMemo(() => sess())
@@ -513,6 +528,32 @@ const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
   // 2: Własny ekran dashboard (route)
   setupRoute(api, worktree)
   trace("route-registered")
+
+  // 2b: Keybind + slash command -> przejdź na route memory-dashboard
+  if (api.command?.register) {
+    const unregisterCommands = api.command.register(() => [
+      {
+        title: "Memory dashboard",
+        value: "memory.dashboard",
+        description: "Otwórz pełnoekranowy dashboard pamięci projektu (route: memory-dashboard)",
+        category: "Memory",
+        keybind: "ctrl+d",
+        slash: { name: "memory dashboard", aliases: ["md"] },
+        onSelect: () => {
+          try {
+            api.route.navigate("memory-dashboard")
+            trace("command-navigate-memory-dashboard")
+          } catch (err) {
+            trace("command-navigate-throw", { error: String(err) })
+          }
+        },
+      } satisfies TuiCommand,
+    ])
+    lifecycle.onDispose(() => unregisterCommands?.())
+    trace("command-registered")
+  } else {
+    trace("command-api-unavailable")
+  }
 
   // 5: Sidebar enrichment (blokery + LSP)
   setupSidebar(api, worktree)

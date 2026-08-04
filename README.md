@@ -33,7 +33,7 @@ Plugin zbudowany według specyfikacji `PLUGIN.md`.
   - [8. Heurystyka trudnych problemów](#8-heurystyka-trudnych-problemów)
   - [9. Ekstraktory platformy docelowej](#9-ekstraktory-platformy-docelowej)
   - [10. Moduł AI (Opcja A — własny tani model)](#10-moduł-ai-opcja-a--własny-tani-model)
-- [Przewodnik: 4 scenariusze krok po kroku](#przewodnik-4-scenariusze-krok-po-kroku)
+- [Przewodnik: 5 scenariuszy krok po kroku](#przewodnik-5-scenariuszy-krok-po-kroku)
 - [Metryki i diagnostyka](#metryki-i-diagnostyka)
 - [Rozwiązywanie problemów](#rozwiązywanie-problemów)
 
@@ -403,7 +403,12 @@ Plugin może wołać tani model AI (niezależny od modelu kodującego) do 3 zada
 
 ## Dostępne komendy
 
-Plugin udostępnia dwa zestawy komend wpisywane w TUI OpenCode: `/memory` (zarządzanie pamięcią projektu) oraz `/context` (diagnostyka budżetu i artefaktów). Obsługa odbywa się przez hook `tui.command.execute`. Wszystkie komendy działają lokalnie, modyfikują wyłącznie dane w `.opencode/memory/` i nie wpływają na pliki źródłowe projektu.
+Plugin udostępnia dwa zestawy komend wpisywane w TUI OpenCode: `/memory` (zarządzanie pamięcią projektu) oraz `/context` (diagnostyka budżetu i artefaktów), a także `/regression`. Obsługa odbywa się przez hooki `command.execute.before` i `tui.command.execute`. Wszystkie komendy działają lokalnie, modyfikują wyłącznie dane w `.opencode/memory/` i nie wpływają na pliki źródłowe projektu.
+
+> **Ważne o ograniczeniach OpenCode (wykryte 2026-08-04):** komendy z plików `.opencode/command/*.md` są przez OpenCode **zawsze** wykonywane jako prompt do modelu (`command.execute.before` → `prompt()` → LLM). OpenCode nie wspiera jeszcze pomijania LLM dla komend (feature request #28292 — `noReply`). Dlatego:
+> 1. Plugin liczy wynik deterministycznie i zapisuje go do `.opencode/memory/command_result.txt` (hook `command.execute.before`).
+> 2. Szablony `.opencode/command/{memory,context,regression}.md` każą modelowi zwrócić ten plik 1:1 — wynik jest wtedy deterministyczny.
+> 3. Gdy pluginu brak (np. projekt bez `.opencode/plugins/`), szablony zawierają **twarde zasady bezpieczeństwa**: model **nigdy** nie może wykonać `git commit`/`add`/`push`/`reset`/`clean`/`checkout <sha> -- .` ani modyfikować plików poza `.opencode/memory/`. To eliminuje przypadek, w którym `/memory save` było interpretowane jako „zacomituj zmiany".
 
 ### `/memory <subkomenda>`
 
@@ -537,7 +542,7 @@ Aby skompaktować: użyj natywnej komendy OpenCode (np. /compact w TUI) lub /mem
 
 #### `/memory compact-now`
 
-Próbuje wymusić kompaktację przez `tui.executeCommand` (komenda `/compact`). Jeśli OpenCode nie wspiera tej komendy przez API, wypisuje instrukcję ręczną. W trybie `auto` z `compaction.auto: true` (konfiguracja OpenCode) kompaktacja nastąpi automatycznie przy następnym `message`.
+Próbuje wymusić kompaktację przez `tui.executeCommand` (komenda `session.compact`). Jeśli OpenCode nie wspiera tej komendy przez API, wypisuje instrukcję ręczną. W trybie `auto` z `compaction.auto: true` (konfiguracja OpenCode) kompaktacja nastąpi automatycznie przy następnym `message`.
 
 #### `/memory compact-reset`
 
@@ -792,27 +797,33 @@ To klasyczny scenariusz dla `/regression`: agent dostaje zgłoszenie o błędzie
 ```
 /memory status            # czy plugin działa poprawnie?
 /memory show              # co agent dostał na starcie?
-/context budget           # czy limity są dobrze dobrane?
-/context artifacts        # które pełne logi są dostępne?
 /memory save               # zachowaj stan przed przerwą
 /memory clear-session     # wyczyść sesję, zostaw fakty
+/memory clear-project     # usuń całą pamięć projektu (uwaga: niszczy project-facts.md)
 /memory compact           # odśwież handoff ręcznie
+/memory compact-status   # rozmiar kontekstu + próg kompaktacji
+/memory compact-now      # wymuś kompaktację (tui.executeCommand: session.compact)
+/memory compact-reset    # zresetuj flagę sugestii
 /memory propose           # zobacz propozycje faktów z sesji
 /memory commit            # dopisz propozycje do project-facts.md
 /memory auto              # pokaż auto-wygenerowane fakty (.auto.md)
 /memory auto-refresh     # ręcznie zregeneruj .auto.md
 /memory init             # wypełnij project-facts.md podpowiedziami z repo
-/memory compact-status   # rozmiar kontekstu + próg kompaktacji
-/memory compact-now      # wymuś kompaktację (lub instrukcja)
-/memory compact-reset    # zresetuj flagę sugestii
 /memory test-history      # historia uruchomień testów/buildów
+/memory lesson <text>    # zapisz trudną lekcję do project-facts.md (sekcja ## Lekcje)
 /memory ai status         # czy AI włączone? jaki model? liczniki wołań
-/memory ai triage         # root-cause ostatnich nieudanych testów (AI)
+/memory ai triage         # root-cause ostatnich nieudanych testów (AI lub fallback)
 /memory tui              # tekstowy widok TUI (działa w CLI)
 /memory dashboard        # pełnoekranowy dashboard TUI (route: memory-dashboard)
+/context budget           # czy limity są dobrze dobrane?
+/context artifacts        # które pełne logi są dostępne?
 /regression last-good     # kiedy testy przeszły ostatnio?
 /regression suspect       # które pliki/commity spowodowały regresję?
 /regression revert stash  # zstashuj zmiany (odwracalne)
+/regression feature add <nazwa> [opis]  # zdefiniuj feature do śledzenia
+/regression feature list  # status feature'ów (ok @ sha / nieoznaczony)
+/regression feature mark <nazwa> [uwaga]  # oznacz feature jako działający na HEAD (git notes)
+/regression feature check <nazwa>  # okno zmian od znanego-dobrego commita + prompt dla modelu
 ```
 
 ---
@@ -1230,7 +1241,7 @@ W każdym przypadku `aiComplete()` zwraca `null` — wywołujący używa ścież
 
 ---
 
-## Przewodnik: 4 scenariusze krok po kroku
+## Przewodnik: 5 scenariuszy krok po kroku
 
 Część dokumentacji napisana prostym językiem, jak dla kogoś, kto pierwszy raz widzi ten plugin. Każdy scenariusz to konkretna sytuacja + dokładne kroki.
 
@@ -1563,6 +1574,61 @@ W slocie `sidebar_content` plugin dokłada blok z aktualnymi blokerami i błęda
 **CLI fallback (`/memory tui`):**
 
 W trybie CLI (non-interactive, bez renderowania slotów) ten sam widok jest dostępny przez komendę `/memory tui` — zwraca 5-linijkowy blok z tymi samymi danymi. Przydatne w skryptach lub gdy TUI nie jest dostępne.
+
+### Scenariusz 5: „Testy przechodzą, ale feature pada w środowisku docelowym"
+
+**Sytuacja:** Opcja, którą rozwijasz (np. `retry-delay`), działa w testach jednostkowych i integracyjnych — wszystkie zielone. Po wdrożeniu w środowisku docelowym (fizyczne urządzenie, staging, produkcja) okazuje się, że feature nie działa. Chcesz mieć punkt odniesienia: „na którym commicie feature był ostatnio sprawdzony jako działający w realnym środowisku", żeby zawęzić okno zmian mogących go złamać.
+
+To klasyczne zastosowanie `/regression feature` — znacznik `git notes` na commicie, niezależny od wyników testów lokalnych.
+
+**Workflow:**
+
+1. **Zdefiniuj feature do śledzenia** (raz na początek prac):
+
+   ```text
+   /regression feature add retry-delay Opcja retry-delay w module radiowym
+   ```
+
+   Zapis do `.opencode/memory/cache/features.json` — definicja jest trwała między sesjami.
+
+2. **Po weryfikacji w środowisku docelowym** (urządzenie/staging/produkcja działa poprawnie):
+
+   ```text
+   /regression feature mark retry-delay
+   ```
+
+   Tworzy notę `git notes append` na HEAD z blokiem `feature:/status=ok/sha=<HEAD>/date=<ISO>/note=...`. Nota siedzi na commicie — historia commitów pozostaje nienaruszona, a punkt odniesienia nie ginie po commicie zmian. Wielokrotne `mark` kumulają się w jednej nocie.
+
+3. **Gdy feature pada w środowisku docelowym** mimo zielonych testów:
+
+   ```text
+   /regression feature check retry-delay
+   ```
+
+   Znajduje ostatni commit z oznaczeniem `status=ok`, pokazuje:
+   - okno czasowe: od znanego-dobrego commita do HEAD
+   - commity w oknie (`git log`)
+   - pliki zmienione w oknie (`git diff --name-only`)
+   - diff zmian w oknie (skrócony)
+   - **gotowy prompt dla modelu kodującego** — model dostaje tylko zmiany w oknie, nie cały kod
+
+   Skopiuj prompt do nowej sesji agenta — model dostaje zawężone okno zmian i może wskazać, która z nich mogła złamać feature.
+
+4. **Lista wszystkich śledzonych feature'ów + status:**
+
+   ```text
+   /regression feature list
+   ```
+
+   Pokazuje status per feature: `ok @ <sha>` (ostatnio oznaczony) / `nieoznaczony`.
+
+**Kluczowa zasada:** `mark` wstawiaj **tylko** po rzeczywistej weryfikacji w środowisku docelowym, nie po testach lokalnych — celem jest punkt odniesienia dla opcji, których testy nie pokrywają pełni zachowania.
+
+**Bezpieczeństwo:**
+- `feature add` i `feature list` — read-only na `.opencode/memory/cache/features.json`
+- `feature mark` — `git notes append` na HEAD (nie modyfikuje commitów, nie tworzy commitów)
+- `feature check` — read-only (`git log`, `git diff`, `git notes show`)
+- Żadna z operacji nie wykonuje `git commit`/`push`/`reset`
 
 ---
 

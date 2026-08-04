@@ -288,6 +288,7 @@ let modelContextLimit: number = 0          // 0 = nie ustalono; autodetekcja z M
 let compactSuggestionShown: boolean = false // czy już pokazano sugestię dla obecnego przekroczenia
 let lastAssistantModel: string = ""        // "provider/model" do autodetekcji limitu
 let currentSessionId: string = ""           // bieżąca sesja (do client.session.messages)
+let pluginClient: any = null                 // ref client API z closure pluginu (do compact-now, ai triage)
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2790,6 +2791,7 @@ function memoryTestHistory(): string {
 
 export const ProjectContextPlugin: Plugin = async ({ project, client, $, directory, worktree }, options) => {
   initMemoryLayout(worktree || directory || process.cwd())
+  pluginClient = client
 
   const userConfig = (options ?? {}) as Partial<Config>
   cfg = { ...DEFAULT_CONFIG, ...userConfig }
@@ -3017,7 +3019,7 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
         const norm = raw.trim()
         if (!/^\/?((memory|context|regression)\b)/.test(norm)) return
         const slash = norm.startsWith("/") ? norm : "/" + norm
-        const result = dispatchCommand(slash)
+        const result = await dispatchCommand(slash)
         if (result === undefined) return
         try {
           writeFileSync(commandResultPath(), `# ${slash}\n${result}`, "utf8")
@@ -3029,7 +3031,7 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
     "tui.command.execute": async (input: any, output: any) => {
       await failOpenAsync(async () => {
         const cmd: string = input?.command ?? ""
-        const r = dispatchCommand(cmd)
+        const r = await dispatchCommand(cmd)
         if (r !== undefined) output.result = r
       }, "tui.command.execute")
     },
@@ -3041,9 +3043,8 @@ function commandResultPath(): string {
 }
 
 // Współdzielony dispatch komend memory/context/regression → deterministyczny wynik.
-// async-tylko komendy (compact-now, ai triage) są pomijane w tym synchronicznym
-// wariancie i obsługiwane jedynie w tui.command.execute / przez model.
-function dispatchCommand(cmd: string): string | undefined {
+// async: compact-now i ai triage wymagają await (wołają client API / aiComplete).
+async function dispatchCommand(cmd: string): Promise<string | undefined> {
   if (cmd.startsWith("/memory status")) return memoryStatus()
   if (cmd.startsWith("/memory show")) return memoryShow()
   if (cmd.startsWith("/memory save")) {
@@ -3055,6 +3056,7 @@ function dispatchCommand(cmd: string): string | undefined {
   if (cmd.startsWith("/memory clear-project")) return memoryClearProject()
   if (cmd.startsWith("/memory compact-status")) return memoryCompactStatus()
   if (cmd.startsWith("/memory compact-reset")) return memoryCompactReset()
+  if (cmd.startsWith("/memory compact-now")) return memoryCompactNow(pluginClient)
   if (cmd.startsWith("/memory compact")) {
     const handoff = buildHandoff(lastSessionId, [])
     writeActiveSession(handoff)
@@ -3068,7 +3070,7 @@ function dispatchCommand(cmd: string): string | undefined {
   if (cmd.startsWith("/memory init")) return memoryInit(cmd.replace(/^\/memory init\s*/, ""))
   if (cmd.startsWith("/memory test-history")) return memoryTestHistory()
   if (cmd.startsWith("/memory ai status")) return aiStatusText()
-  if (cmd.startsWith("/memory ai triage")) return undefined // async
+  if (cmd.startsWith("/memory ai triage")) return aiTriageFailedTests()
   if (cmd.startsWith("/memory ai")) return aiStatusText()
   if (cmd.startsWith("/memory tui")) return memoryTuiDump()
   if (cmd.startsWith("/memory dashboard")) return "Dashboard TUI: użyj w trybie interaktywnym (route: memory-dashboard)"
