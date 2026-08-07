@@ -301,6 +301,7 @@ function failOpen(fn: () => void, label: string) {
   } catch (e: any) {
     try {
       const logPath = join(memoryDir || process.cwd(), "plugin-errors.log")
+      rotateLogIfNeeded(logPath)
       writeFileSync(logPath, `[${new Date().toISOString()}] ${label}: ${e?.message ?? e}\n`, { flag: "a" })
     } catch {
       // swallow
@@ -314,6 +315,7 @@ function failOpenReturn<T>(fn: () => T, fallback: T, label: string): T {
   } catch (e: any) {
     try {
       const logPath = join(memoryDir || process.cwd(), "plugin-errors.log")
+      rotateLogIfNeeded(logPath)
       writeFileSync(logPath, `[${new Date().toISOString()}] ${label}: ${e?.message ?? e}\n`, { flag: "a" })
     } catch {
       // swallow
@@ -322,12 +324,25 @@ function failOpenReturn<T>(fn: () => T, fallback: T, label: string): T {
   }
 }
 
+const FAIL_OPEN_ASYNC_TIMEOUT_MS = 5000
+
 async function failOpenAsync(fn: () => Promise<void> | void, label: string) {
   try {
-    await fn()
+    const task = fn()
+    if (task && typeof (task as Promise<void>).then === "function") {
+      // Ochrona przed zawieszonymi promisami (np. fetch bez odpowiedzi, session.prompt
+      // wiszący na SDK). Bez tego opencode czeka w nieskończoność i ESC nie przerywa.
+      await Promise.race([
+        task as Promise<void>,
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error(`timeout ${FAIL_OPEN_ASYNC_TIMEOUT_MS}ms`)), FAIL_OPEN_ASYNC_TIMEOUT_MS)
+        ),
+      ])
+    }
   } catch (e: any) {
     try {
       const logPath = join(memoryDir || process.cwd(), "plugin-errors.log")
+      rotateLogIfNeeded(logPath)
       writeFileSync(logPath, `[${new Date().toISOString()}] ${label}: ${e?.message ?? e}\n`, { flag: "a" })
     } catch {
       // swallow
@@ -422,6 +437,7 @@ type AIStatus = {
   enabled: boolean
   provider: string
   model: string
+  sdkMode: boolean              // true = wołanie przez SDK session.prompt (poświadczenia OpenCode)
   lastCallMs: number
   lastError: string
   calls: number
@@ -433,6 +449,7 @@ let aiStatus: AIStatus = {
   enabled: false,
   provider: "",
   model: "",
+  sdkMode: false,
   lastCallMs: 0,
   lastError: "",
   calls: 0,
@@ -440,19 +457,121 @@ let aiStatus: AIStatus = {
   failures: 0,
 }
 
+// Circuit breaker: po N kolejnych awariach w oknie czasowym AI jest wyłączane,
+// żeby nie tworzyć pętli błędów (np. endpoint 500 w nieskończoność).
+const AI_CB_THRESHOLD = 5          // po tylu kolejnych awariach wyłączamy
+const AI_CB_WINDOW_MS = 60_000      // okno liczenia awarii (1 min)
+let aiCbFailuresSince: number = 0    // licznik kolejnych awarii
+let aiCbFirstFailureAt: number = 0   // timestamp pierwszej awarii w oknie
+let aiCbTrippedUntil: number = 0     // do kiedy breaker jest otwarty (0 = zamknięty)
+
+function aiCbShouldSkip(): boolean {
+  if (aiCbTrippedUntil && Date.now() < aiCbTrippedUntil) return true
+  if (aiCbTrippedUntil && Date.now() >= aiCbTrippedUntil) {
+    // reset po cooldownie — spróbuj ponownie
+    aiCbTrippedUntil = 0
+    aiCbFailuresSince = 0
+  }
+  return false
+}
+
+function aiCbRecordFailure() {
+  const now = Date.now()
+  if (!aiCbFirstFailureAt || (now - aiCbFirstFailureAt) > AI_CB_WINDOW_MS) {
+    aiCbFirstFailureAt = now
+    aiCbFailuresSince = 1
+  } else {
+    aiCbFailuresSince += 1
+  }
+  if (aiCbFailuresSince >= AI_CB_THRESHOLD) {
+    aiCbTrippedUntil = now + AI_CB_WINDOW_MS
+    aiLogError(`AI circuit breaker TRIPPED: ${aiCbFailuresSince} failures in window, pausing AI for ${AI_CB_WINDOW_MS}ms`)
+  }
+}
+
+function aiCbRecordSuccess() {
+  aiCbFailuresSince = 0
+  aiCbFirstFailureAt = 0
+  aiCbTrippedUntil = 0
+}
+
+// Runtime override: model wybrany przez /memory ai model <providerID/modelID>.
+// Gdy ustawiony + pluginClient dostępny, aiComplete woła client.session.prompt
+// zamiast własnego fetch — używa poświadczeń OpenCode (kluczy z /connect).
+// UWAGA: dla poleceń poza subcommand map (np. "ai model <id>") plugin woła LLM z instrukcjami,
+// które zabraniają modyfikacji plików poza .opencode/memory/. Te instrukcje nie dotyczą
+// samego pluginu (który jest właścicielem .opencode/), ale powstrzymują model od pisania.
+// Dlatego trwałego stanu trzyma plugin, a nie model.
+let aiSelectedSdkModel: string = ""   // "providerID/modelID" lub ""
+
+function aiSelectedModelPath(): string {
+  return join(memoryDir, "cache", "ai-selected-model.json")
+}
+
+function loadAiSelectedModel(): string {
+  const data = readJson<{ model: string } | null>(aiSelectedModelPath())
+  return (data && typeof data.model === "string") ? data.model : ""
+}
+
+function saveAiSelectedModel(model: string): void {
+  try { writeJson(aiSelectedModelPath(), { model }) } catch { /* swallow */ }
+}
+
+const LOG_ROTATE_MAX_BYTES = 1_000_000   // 1 MB — przy tnij do ostatnich 200 linii
+
+function rotateLogIfNeeded(logPath: string) {
+  try {
+    const st = statSync(logPath)
+    if (st.size > LOG_ROTATE_MAX_BYTES) {
+      const raw = readFileSync(logPath, "utf8")
+      const lines = raw.split("\n")
+      const kept = lines.slice(-200).join("\n")
+      writeFileSync(logPath, kept, "utf8")
+    }
+  } catch { /* swallow */ }
+}
+
 function aiLogError(msg: string) {
   aiStatus.lastError = msg
   try {
     const logPath = join(memoryDir || process.cwd(), "plugin-ai.log")
+    rotateLogIfNeeded(logPath)
     writeFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`, { flag: "a" })
   } catch { /* swallow */ }
 }
 
-// Interpolacja ${ENV_VAR} w wartościach konfiga (np. apiKey: "${OPENAI_API_KEY}")
+// Parsuje "providerID/modelID" — dzieli tylko na pierwszym slashu, by obsłużyć
+// modelID zawierające slashe (np. "openrouter/cohere/north-mini-code:free").
+// Zwraca [providerID, modelID] lub ["", ""] gdy niepoprawny.
+function parseModelKey(modelKey: string): [string, string] {
+  if (!modelKey || typeof modelKey !== "string") return ["", ""]
+  const slashIdx = modelKey.indexOf("/")
+  if (slashIdx <= 0 || slashIdx >= modelKey.length - 1) return ["", ""]
+  return [modelKey.slice(0, slashIdx), modelKey.slice(slashIdx + 1)]
+}
+
+// Bezpieczna serializacja błędu/obiektu do stringa (nigdy nie zwraca "[object Object]").
+function safeErrorString(e: any): string {
+  if (e == null) return "null"
+  if (typeof e === "string") return e
+  if (e?.message && typeof e.message === "string") return e.message
+  if (e?.error && typeof e.error === "string") return e.error
+  try { return JSON.stringify(e) } catch { return String(e) }
+}
+
+// Interpolacja ${ENV_VAR} w wartościach konfiga (np. apiKey: "${OPENAI_API_KEY}").
+// Obsługuje też literał bez zmiennej środowiskowej: ${literal} lub ${ns:literal}
+// — zwraca wtedy wartość dosłowną (bez ${ i }), by móc wpisać apiKey inline.
 function interpolateEnv(value: string): string {
   if (!value || typeof value !== "string") return value
-  return value.replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (_, name: string) => {
-    return process.env[name] ?? ""
+  return value.replace(/\$\{([^}]+)\}/g, (_, inner: string) => {
+    const name = inner.trim()
+    // Jeśli nazwa jest poprawnym identyfikatorem zmiennej środowiskowej, zinterpoluj.
+    if (/^[A-Z_][A-Z0-9_]*$/.test(name)) {
+      return process.env[name] ?? ""
+    }
+    // Inaczej: zwróć wartość dosłowną (obsługa ${sk-lm-xxx:yyy} itp.).
+    return name
   })
 }
 
@@ -518,8 +637,13 @@ function aiBuildHeaders(c: AIConfig): Record<string, string> {
 }
 
 function aiUrl(c: AIConfig): string {
-  const base = c.baseUrl.replace(/\/$/, "")
+  let base = c.baseUrl.replace(/\/$/, "")
   if (c.provider === "anthropic") return `${base}/messages`
+  // openai-compatible: auto-dopisz /v1 jeśli brakuje (LM Studio, Ollama-compat).
+  // Ollama natywny ma własny endpoint /api/chat, ale fallback przez /chat/completions.
+  if (c.provider === "openai-compatible" && !/\/v\d+$/.test(base)) {
+    base += "/v1"
+  }
   return `${base}/chat/completions`
 }
 
@@ -571,6 +695,77 @@ function tryParseJson(text: string): any | null {
   }
 }
 
+// Wołanie modelu przez SDK session.prompt — używa poświadczeń OpenCode (/connect).
+// Wymaga client.session i aktywnego sessionID. Zwraca tekst lub rzuca.
+// Tworzy ephemeralną sub-sesję jeśli brak bieżącej, by nie zaśmiecać głównej historii.
+async function aiCompleteSdk(
+  client: any,
+  modelKey: string,
+  system: string,
+  prompt: string,
+  maxTokens: number,
+  timeoutMs: number,
+): Promise<string> {
+  if (!client?.session?.prompt) throw new Error("client.session.prompt unavailable")
+  const [providerID, modelID] = parseModelKey(modelKey)
+  if (!providerID || !modelID) throw new Error(`invalid model key: ${modelKey}`)
+
+  const fullPrompt = system ? `${system}\n\n${prompt}` : prompt
+  let sessionId = currentSessionId || lastSessionId
+
+  // Użyj bieżącej sesji jeśli dostępna; inaczej stwórz ephemeralną.
+  // SDK z ThrowOnError=false zwraca { data, error, request, response }:
+  //   sukces -> { data: Session, error: undefined }
+  //   błąd   -> { data: undefined, error: <Error> }
+  let ephemeral = false
+  if (!sessionId) {
+    try {
+      const s = await client.session.create({ body: { title: `memory-ai-${Date.now()}` } })
+      sessionId = s?.data?.id ?? s?.body?.id ?? s?.id
+      ephemeral = true
+      if (!sessionId) {
+        const err: any = (s as any)?.error
+        const errMsg = err?.message ?? (err ? safeErrorString(err) : "returned no id")
+        throw new Error(`session.create returned no id (error: ${errMsg}; status: ${(s as any)?.response?.status ?? "?"})`)
+      }
+    } catch (e: any) {
+      throw new Error(`session.create failed: ${safeErrorString(e)}`)
+    }
+  }
+
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const res = await client.session.prompt({
+      path: { id: sessionId },
+      body: {
+        model: { providerID, modelID },
+        parts: [{ type: "text", text: fullPrompt }],
+      },
+    })
+    // SDK ThrowOnError=false: { data?, error?, request, response }
+    if (!(res as any)?.data && (res as any)?.error) {
+      const err: any = (res as any)?.error
+      const errMsg = err?.message ?? (err ? safeErrorString(err) : "unknown")
+      throw new Error(`session.prompt error: ${errMsg} (status: ${(res as any)?.response?.status ?? "?"})`)
+    }
+    const body = (res as any)?.data ?? res?.body ?? res
+    // SessionPromptResponses[200] = { info: AssistantMessage, parts: Part[] }
+    const parts = body?.parts ?? []
+    const text = parts
+      .filter((p: any) => p?.type === "text")
+      .map((p: any) => p?.text ?? "")
+      .join("")
+    if (!text || !text.trim()) throw new Error("empty response from session.prompt")
+    return text
+  } finally {
+    clearTimeout(timer)
+    if (ephemeral && sessionId) {
+      try { await client.session.delete({ path: { id: sessionId } }) } catch { /* swallow */ }
+    }
+  }
+}
+
 // Główna funkcja AI. Zwraca null przy każdym błędzie (nigdy nie rzuca).
 // Wywołujący ma fallback deterministyczny.
 async function aiComplete(opts: {
@@ -578,6 +773,44 @@ async function aiComplete(opts: {
   prompt: string
   jsonMode?: boolean
 }): Promise<string | null> {
+  // Circuit breaker: jeśli AI awariuje w pętli, przestań próbować — pozwól
+  // deterministycznym fallbackom działać i nie blokuj runtime'u opencode.
+  if (aiCbShouldSkip()) return null
+  // Ścieżka SDK: model wybrany przez /memory ai model + pluginClient dostępny.
+  if (aiSelectedSdkModel && pluginClient) {
+    aiStatus.enabled = true
+    aiStatus.sdkMode = true
+    aiStatus.provider = aiSelectedSdkModel.split("/")[0] || "sdk"
+    aiStatus.model = aiSelectedSdkModel
+    aiStatus.calls += 1
+    const t0 = Date.now()
+    try {
+      const text = await aiCompleteSdk(pluginClient, aiSelectedSdkModel, opts.system ?? "", opts.prompt, cfg.ai?.maxTokens ?? 800, cfg.ai?.timeoutMs ?? 15000)
+      if (opts.jsonMode) {
+        const parsed = tryParseJson(text)
+        if (!parsed) {
+          aiStatus.failures += 1
+          aiLogError(`bad JSON from SDK ${aiSelectedSdkModel}: ${text.slice(0, 200)}`)
+          return null
+        }
+      }
+      if (!text || !text.trim()) throw new Error("empty SDK response")
+      aiStatus.successes += 1
+      aiStatus.lastCallMs = Date.now() - t0
+      aiStatus.lastError = ""
+      aiCbRecordSuccess()
+      return text
+    } catch (e: any) {
+      aiStatus.failures += 1
+      aiStatus.lastCallMs = Date.now() - t0
+      const msg = safeErrorString(e)
+      aiLogError(`SDK call failed (${aiSelectedSdkModel}): ${msg}`)
+      aiCbRecordFailure()
+      return null
+    }
+  }
+
+  // Ścieżka HTTP (istniejąca): własny fetch z ai config.
   const c = aiEffectiveConfig()
   if (!c) return null
   aiStatus.enabled = true
@@ -619,12 +852,14 @@ async function aiComplete(opts: {
       aiStatus.successes += 1
       aiStatus.lastCallMs = Date.now() - t0
       aiStatus.lastError = ""
+      aiCbRecordSuccess()
       return text
     } catch (e: any) {
       aiStatus.failures += 1
       aiStatus.lastCallMs = Date.now() - t0
-      const msg = e?.name === "AbortError" ? `timeout (${cc.timeoutMs}ms)` : (e?.message ?? String(e))
+      const msg = e?.name === "AbortError" ? `timeout (${cc.timeoutMs}ms)` : safeErrorString(e)
       aiLogError(`call failed (${model}): ${msg}`)
+      aiCbRecordFailure()
       // spróbuj kolejny model z fallbackChain (jeśli błąd sieciowy / HTTP)
       continue
     }
@@ -634,23 +869,139 @@ async function aiComplete(opts: {
 
 // Diagnostyka AI dla komendy /memory ai status
 function aiStatusText(): string {
-  if (!aiStatus.enabled && !aiEffectiveConfig()) {
+  if (!aiStatus.enabled && !aiEffectiveConfig() && !aiSelectedSdkModel) {
     return [
       "AI: wyłączone.",
       "Aby włączyć, dodaj w opencode.json plugin options:",
       '  "ai": { "enabled": true, "provider": "openai-compatible", "apiKey": "${OPENAI_API_KEY}", "model": "gpt-4o-mini" }',
       "Inni providerzy: \"ollama\" (lokalny, bez apiKey), \"anthropic\".",
+      "",
+      "Albo użyj darmowego modelu chmurowego z /models bez konfiga AI:",
+      "  /memory ai models          — lista dostępnych modeli",
+      "  /memory ai model <id>      — wybierz model (np. groq/llama-3.1-8b-instant)",
+      "  /memory ai model           — reset do configa (lub wyłącz)",
     ].join("\n")
   }
+  const lines: string[] = []
+  if (aiSelectedSdkModel) {
+    lines.push(`AI: włączone (SDK mode)`)
+    lines.push(`Model SDK: ${aiSelectedSdkModel}`)
+    lines.push(`Poświadczenia: z OpenCode /connect (brak własnego apiKey)`)
+  } else {
+    lines.push(`AI: ${aiStatus.enabled ? "włączone" : "wyłączone (brak apiKey)"}`)
+    lines.push(`Provider: ${aiStatus.provider}`)
+    lines.push(`Model: ${aiStatus.model}`)
+  }
+  lines.push(`Wołania: ${aiStatus.calls} (sukces: ${aiStatus.successes}, porażka: ${aiStatus.failures})`)
+  lines.push(`Ostatni czas: ${aiStatus.lastCallMs}ms`)
+  lines.push(aiStatus.lastError ? `Ostatni błąd: ${aiStatus.lastError}` : "Brak błędów.")
+  if (aiStatus.failures > 0) lines.push("Fallback deterministyczny aktywny (AI nie przeszkadza).")
+  return lines.join("\n")
+}
+
+// Lista dostępnych modeli z client.config.providers() — to samo źródło co /models.
+async function aiListModels(): Promise<string> {
+  if (!pluginClient?.config?.providers) {
+    return [
+      "client.config.providers niedostępne (pluginClient brak).",
+      "Uruchom komendę w aktywnej sesji OpenCode, nie w izolowanym testach.",
+    ].join("\n")
+  }
+  try {
+    const res = await pluginClient.config.providers()
+    // DIAGNOSTYKA: zdumpuj rzeczywisty kształt odpowiedzi SDK
+    try {
+      const dump = JSON.stringify(res, null, 2)
+      writeFileSync(join(memoryDir, "cache", "providers_dump.json"), dump, "utf8")
+    } catch { /* ignore */ }
+    const body = res?.body ?? res?.data ?? res
+    const providers = body?.providers ?? body?.data?.providers ?? []
+    if (!providers.length) {
+      return [
+        "Brak providerów. Użyj /connect aby dodać poświadczenia.",
+        "",
+        `--- DIAGNOSTYKA ---`,
+        `res === undefined: ${res === undefined}`,
+        `res === null: ${res === null}`,
+        `typeof res: ${typeof res}`,
+        `res?.body !== undefined: ${res?.body !== undefined}`,
+        `body?.providers !== undefined: ${body?.providers !== undefined}`,
+        `Array.isArray(body?.providers): ${Array.isArray(body?.providers)}`,
+        `body keys: ${body && typeof body === "object" ? Object.keys(body).join(", ") : "(n/a)"}`,
+        "Pełny dump: .opencode/memory/cache/providers_dump.json",
+      ].join("\n")
+    }
+    const lines: string[] = ["Dostępne modele (z /models):", ""]
+    for (const p of providers) {
+      const pid = p?.id ?? p?.providerID ?? "?"
+      const models = p?.models ?? {}
+      const keys = Object.keys(models)
+      if (!keys.length) continue
+      lines.push(`## ${pid}`)
+      for (const mid of keys) {
+        const m = models[mid]
+        const name = m?.name ?? mid
+        const ctx = m?.limit?.context ?? m?.capabilities?.limit?.context
+        const ctxStr = ctx ? ` [ctx ${ctx.toLocaleString()}]` : ""
+        const sel = aiSelectedSdkModel === `${pid}/${mid}` ? " ← wybrany" : ""
+        lines.push(`  ${pid}/${mid}${ctxStr}${sel}`)
+      }
+      lines.push("")
+    }
+    if (aiSelectedSdkModel) {
+      lines.push(`Wybrany: ${aiSelectedSdkModel}`)
+      lines.push("Reset: /memory ai model")
+    } else {
+      lines.push("Wybierz: /memory ai model <providerID/modelID>")
+    }
+    return lines.join("\n")
+  } catch (e: any) {
+    return `Błąd listowania modeli: ${e?.message ?? e}`
+  }
+}
+
+// Ustaw lub resetuj model SDK. Zwraca komunikat.
+async function aiSetModel(modelArg: string): Promise<string> {
+  const arg = modelArg.trim()
+  if (!arg) {
+    if (!aiSelectedSdkModel) return "Model SDK nie był ustawiony. Brak zmian."
+    aiSelectedSdkModel = ""
+    saveAiSelectedModel("")
+    return `Reset modelu SDK → powrót do configa ai (${cfg.ai?.model || "wyłączone"}).`
+  }
+  // Walidacja: format providerID/modelID
+  if (!arg.includes("/")) {
+    return [
+      `Niepoprawny format: "${arg}". Oczekiwano providerID/modelID.`,
+      "Lista: /memory ai models",
+    ].join("\n")
+  }
+  // Walidacja: czy model istnieje w /models (jeśli pluginClient dostępny)
+  if (pluginClient?.config?.providers) {
+    try {
+      const res = await pluginClient.config.providers()
+      const body = res?.body ?? res?.data ?? res
+      const providers = body?.providers ?? body?.data?.providers ?? []
+      const slashIdx = arg.indexOf("/")
+      const pid = slashIdx >= 0 ? arg.slice(0, slashIdx) : arg
+      const mid = slashIdx >= 0 ? arg.slice(slashIdx + 1) : ""
+      const p = providers.find((x: any) => (x?.id ?? x?.providerID) === pid)
+      if (!p) return `Provider "${pid}" nie znaleziony. Lista: /memory ai models`
+      const models = p?.models ?? {}
+      if (!models[mid]) return `Model "${mid}" nie znaleziony u provider "${pid}". Lista: /memory ai models`
+    } catch { /* nie krytyczne — pozwól ustawić mimo braku walidacji */ }
+  }
+  aiSelectedSdkModel = arg
+  saveAiSelectedModel(arg)
+  aiStatus.enabled = true
+  aiStatus.sdkMode = true
+  aiStatus.provider = arg.slice(0, arg.indexOf("/"))
+  aiStatus.model = arg
   return [
-    `AI: ${aiStatus.enabled ? "włączone" : "wyłączone (brak apiKey)"}`,
-    `Provider: ${aiStatus.provider}`,
-    `Model: ${aiStatus.model}`,
-    `Wołania: ${aiStatus.calls} (sukces: ${aiStatus.successes}, porażka: ${aiStatus.failures})`,
-    `Ostatni czas: ${aiStatus.lastCallMs}ms`,
-    aiStatus.lastError ? `Ostatni błąd: ${aiStatus.lastError}` : "Brak błędów.",
-    aiStatus.failures > 0 ? "Fallback deterministyczny aktywny (AI nie przeszkadza)." : "",
-  ].filter(Boolean).join("\n")
+    `Wybrano model SDK: ${arg}`,
+    "Poświadczenia: z OpenCode /connect (brak własnego apiKey w configu).",
+    "Test: /memory ai status (po pierwszym wołaniu będą liczniki).",
+  ].join("\n")
 }
 
 // --- AI-enhanced: triage ostatnich failed tests -------------------------------
@@ -720,6 +1071,14 @@ function initMemoryLayout(worktree: string) {
   loadDedupCache()
   loadTestHistory()
   loadSessionTrace()
+  // Restore AI model override selected via /memory ai model <id>
+  aiSelectedSdkModel = loadAiSelectedModel()
+  if (aiSelectedSdkModel) {
+    aiStatus.enabled = true
+    aiStatus.sdkMode = true
+    aiStatus.provider = aiSelectedSdkModel.split("/")[0] || "sdk"
+    aiStatus.model = aiSelectedSdkModel
+  }
 }
 
 function factsPath(): string {
@@ -2257,7 +2616,15 @@ function dirSizeBytes(dir: string): number {
   return total
 }
 
+const FLUSH_METRICS_MIN_INTERVAL_MS = 2000
+let lastFlushMetricsAt = 0
+
 function flushMetrics() {
+  // Throttle: zapisuj metryki najwyżej co 2s — unikamy pętli EMFILE
+  // gdy flushMetrics jest wołane z tool.execute.after + session.idle w krótkim czasie.
+  const now = Date.now()
+  if (now - lastFlushMetricsAt < FLUSH_METRICS_MIN_INTERVAL_MS) return
+  lastFlushMetricsAt = now
   metrics.estimatedReductionPercent = metrics.rawChars > 0
     ? +(((metrics.rawChars - metrics.deliveredChars) / metrics.rawChars) * 100).toFixed(1)
     : 0
@@ -2575,12 +2942,12 @@ function compactStatusText(): string {
 
 async function autodetectModelLimit(client: any, modelKey: string): Promise<number> {
   if (!client || !modelKey) return 0
-  const [providerID, modelID] = modelKey.split("/")
+  const [providerID, modelID] = parseModelKey(modelKey)
   if (!providerID || !modelID) return 0
   try {
     const res = await client?.config?.providers?.()
-    const body = res?.body ?? res
-    const providers = body?.providers ?? []
+    const body = res?.body ?? res?.data ?? res
+    const providers = body?.providers ?? body?.data?.providers ?? []
     for (const p of providers) {
       if (p.id !== providerID) continue
       const m = p?.models?.[modelID]
@@ -3023,7 +3390,12 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
     // brak — model działa wg jawnego opisu w szablonie.
     "command.execute.before": async (input: any, output: any) => {
       await failOpenAsync(async () => {
-        const raw = String(input?.command ?? input?.input?.command ?? "")
+        // opencode splits the typed slash command into `command` (e.g. "/memory"
+        // or "memory") and `arguments` (e.g. "ai models"). Reconstruct the full
+        // token stream so dispatchCommand's startsWith checks can match subcommands.
+        const cmdPart = String(input?.command ?? input?.input?.command ?? "")
+        const argPart = input?.arguments != null ? " " + String(input.arguments) : ""
+        const raw = `${cmdPart}${argPart}`.trim()
         const norm = raw.trim()
         if (!/^\/?((memory|context|regression)\b)/.test(norm)) return
         const slash = norm.startsWith("/") ? norm : "/" + norm
@@ -3038,7 +3410,9 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
     // ----------------------------------------------------------- TUI commands
     "tui.command.execute": async (input: any, output: any) => {
       await failOpenAsync(async () => {
-        const cmd: string = input?.command ?? ""
+        const cmdPart: string = input?.command ?? ""
+        const argPart = input?.arguments != null ? " " + String(input.arguments) : ""
+        const cmd: string = `${cmdPart}${argPart}`.trim()
         const r = await dispatchCommand(cmd)
         if (r !== undefined) output.result = r
       }, "tui.command.execute")
@@ -3077,6 +3451,9 @@ async function dispatchCommand(cmd: string): Promise<string | undefined> {
   if (cmd.startsWith("/memory auto")) return memoryAutoShow()
   if (cmd.startsWith("/memory init")) return memoryInit(cmd.replace(/^\/memory init\s*/, ""))
   if (cmd.startsWith("/memory test-history")) return memoryTestHistory()
+  if (cmd.startsWith("/memory ai models")) return aiListModels()
+  if (cmd.startsWith("/memory ai model ")) return aiSetModel(cmd.replace(/^\/memory ai model\s+/, ""))
+  if (cmd === "/memory ai model") return aiSetModel("")
   if (cmd.startsWith("/memory ai status")) return aiStatusText()
   if (cmd.startsWith("/memory ai triage")) return aiTriageFailedTests()
   if (cmd.startsWith("/memory ai")) return aiStatusText()
@@ -3090,5 +3467,13 @@ async function dispatchCommand(cmd: string): Promise<string | undefined> {
   if (cmd.startsWith("/regression feature")) return regressionFeature(cmd.replace(/^\/regression feature\s*/, ""))
   return undefined
 }
+
+// Eksport testowy — funkcje czysto/jednostkowe do pokrycia regresyjnego.
+export const __testState = () => ({
+  interpolateEnv,
+  aiUrl,
+  safeErrorString,
+  parseModelKey,
+})
 
 export default ProjectContextPlugin

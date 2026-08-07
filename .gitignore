@@ -7,7 +7,15 @@
 .opencode/memory/plugin-ai.log
 .opencode/memory/project-facts.auto.md
 .opencode/memory/project-facts.ai.md
+.opencode/memory/command_result.txt
 .opencode/plugins/tsconfig.pc.json
 .opencode/memory/tui-trace.log
 samouczek.html
 nul
+
+# IJFW runtime data
+.ijfw/
+ijfw/
+
+# Dependencies
+node_modules/

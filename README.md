@@ -358,24 +358,55 @@ Zmiany konfiguracji wymagają restartu OpenCode.
 
 ### AI module (`ai`)
 
-Plugin może wołać tani model AI (niezależny od modelu kodującego) do 3 zadań: podsumowanie sesji (handoff), ekstrakcja konwencji/ryzyka z dokumentacji (README/CLAUDE.md), oraz triage nieudanych testów. Model jest konfigurowany w sekcji `ai` plugin options:
+Plugin może wołać tani model AI (niezależny od modelu kodującego) do 3 zadań: podsumowanie sesji (handoff), ekstrakcja konwencji/ryzyka z dokumentacji (README/CLAUDE.md), oraz triage nieudanych testów. Model jest konfigurowany w sekcji `ai` plugin options.
 
-```jsonc
-"plugin": [["./.opencode/plugins/project-context.ts", {
-  // ...
-  "ai": {
-    "enabled": true,
-    "provider": "openai-compatible",        // | "ollama" | "anthropic"
-    "baseUrl": "",                           // puste = domyślny per provider
-    "apiKey": "${OPENAI_API_KEY}",           // env interpolation; ollama nie wymaga
-    "model": "gpt-4o-mini",                  // tani model
-    "maxTokens": 800,
-    "temperature": 0,
-    "timeoutMs": 15000,
-    "fallbackChain": ["ollama:qwen2.5:7b"]   // kolejne modele do spróbowania
-  }
-}]]
+#### Jak wkleić `ai` do `opencode.json`
+
+Sekcja `ai` jest **zagnieżdżonym obiektem** wewnątrz opcji pluginu — czyli drugiego elementu tablicy `["./.opencode/plugins/project-context.ts", { ... }]`. Pełny przykład:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    ["./.opencode/plugins/project-context.ts", {
+      "enabled": true,
+      "maxProjectMemoryTokens": 1500,
+      "maxSessionHandoffTokens": 1000,
+      "maxToolResultLines": 100,
+      "maxDiffLines": 120,
+      "maxSearchMatches": 40,
+      "maxArtifactPreviewLines": 80,
+      "deduplicateReadResults": true,
+      "storeFullArtifacts": true,
+      "persistentDedupCache": true,
+      "maxDedupCacheEntries": 500,
+      "maxTestHistoryEntries": 50,
+      "regressionTrackHead": true,
+      "regressionSafeRevertOnly": true,
+      "autoExtractFacts": true,
+      "autoExtractOnEvents": ["session.idle", "session.compacted"],
+      "factsAutoGlobDepth": 3,
+      "compactMode": "suggest",
+      "maxContextTokens": 0,
+      "compactThreshold": 80,
+      "compactReservedTokens": 10000,
+      "ai": {
+        "enabled": true,
+        "provider": "openai-compatible",
+        "baseUrl": "https://api.openai.com/v1",
+        "apiKey": "${OPENAI_API_KEY}",
+        "model": "gpt-4o-mini",
+        "maxTokens": 800,
+        "temperature": 0,
+        "timeoutMs": 15000,
+        "fallbackChain": ["gpt-4o-mini", "gpt-3.5-turbo"]
+      }
+    }]
+  ]
+}
 ```
+
+#### Pola `ai`
 
 | Pole           | Domyślnie             | Opis |
 | -------------- | --------------------- | ---- |
@@ -389,15 +420,162 @@ Plugin może wołać tani model AI (niezależny od modelu kodującego) do 3 zada
 | `timeoutMs`    | `15000`               | Timeout żądania (AbortController) |
 | `fallbackChain`| `[]`                  | Lista kolejnych modeli do spróbowania przy błędzie pierwszego |
 
-**Fallback (warstwowo):** przy braku `enabled`/`apiKey` → moduł wyłączony, plugin działa deterministycznie (status quo). Przy błędzie sieci/HTTP/timeout → retry 1× + próba kolejnych modeli z `fallbackChain`. Przy złej odpowiedzi JSON → retry 1× z `temperature: 0`. W każdym przypadku `aiComplete()` zwraca `null` — wywołujący używa ścieżki deterministycznej. AI nigdy nie w ścieżce krytycznej.
+#### Przykłady per provider
+
+**OpenAI-compatible** (OpenAI, OpenRouter, Together, Groq, lokalny LM Studio itp.):
+```json
+"ai": {
+  "enabled": true,
+  "provider": "openai-compatible",
+  "baseUrl": "https://api.openai.com/v1",
+  "apiKey": "${OPENAI_API_KEY}",
+  "model": "gpt-4o-mini",
+  "maxTokens": 800,
+  "temperature": 0,
+  "timeoutMs": 15000,
+  "fallbackChain": []
+}
+```
+
+**Ollama** (lokalnie, bez apiKey):
+```json
+"ai": {
+  "enabled": true,
+  "provider": "ollama",
+  "baseUrl": "http://localhost:11434",
+  "apiKey": "",
+  "model": "llama3.1:8b",
+  "maxTokens": 800,
+  "temperature": 0,
+  "timeoutMs": 60000,
+  "fallbackChain": ["qwen2.5:7b"]
+}
+```
+
+**Anthropic**:
+```json
+"ai": {
+  "enabled": true,
+  "provider": "anthropic",
+  "baseUrl": "https://api.anthropic.com",
+  "apiKey": "${ANTHROPIC_API_KEY}",
+  "model": "claude-3-5-haiku-latest",
+  "maxTokens": 800,
+  "temperature": 0,
+  "timeoutMs": 20000,
+  "fallbackChain": []
+}
+```
+
+#### ⚠️ Uwaga o płytkim merge'u (potencjalny pułapka)
+
+Plugin ładuje konfigurację przez **shallow merge** (`project-context.ts:2798`):
+```ts
+cfg = { ...DEFAULT_CONFIG, ...userConfig }
+```
+
+Oznacza to, że `userConfig.ai` **zastępuje cały** obiekt `DEFAULT_CONFIG.ai`, a nie scala się z nim. W praktyce:
+
+- Jeśli **nie podasz** `ai` wcale → użyje `DEFAULT_CONFIG.ai` (z `enabled: false`).
+- Jeśli **podasz `ai`** → podaj **pełny obiekt** ze wszystkimi potrzebnymi polami. Minimalna definicja `{ "ai": { "enabled": true } }` pozostawi `provider`, `baseUrl`, `apiKey`, `model` itp. puste (zamiast domyślnych), co zazwyczaj nie jest intencją.
+
+Dlatego w przykładach powyżej zawsze podajemy pełny obiekt `ai`.
+
+#### Weryfikacja
+
+Po edycji sprawdź poprawność JSON:
+```bash
+node -e "JSON.parse(require('fs').readFileSync('opencode.json','utf8')); console.log('OK')"
+```
+
+#### Tryb SDK: darmowy model chmurowy z `/models` (bez własnego `apiKey`)
+
+Alternatywa dla konfiguracji `ai` w `opencode.json` — wybór modelu przez **selektor `/models`** OpenCode, z poświadczeniami z `/connect` (brak własnego `apiKey`/`baseUrl` w configu pluginu). Idealne dla darmowych modeli chmurowych (Groq, OpenRouter `:free`).
+
+Plugin woła `client.session.prompt()` z wybranym modelem, korzystając z kluczy dodanych w OpenCode przez `/connect`. Działa bez sekcji `ai` w `opencode.json` — wystarczy dodać providera w OpenCode i wybrać model.
+
+**Komendy:**
+
+```text
+/memory ai models              # lista dostępnych modeli (to samo źródło co /models)
+/memory ai model <providerID/modelID>   # wybierz model do zadań pluginu
+/memory ai model               # reset → powrót do configa ai (lub wyłącz)
+/memory ai status              # diagnostyka: wybrany model + liczniki
+```
+
+**Przykład — Groq (darmowy tier):**
+
+1. W OpenCode: `/connect` → dodaj providera `groq` z kluczem z [console.groq.com](https://console.groq.com)
+2. W TUI:
+```text
+/memory ai models
+# wyświetli listę, m.in.:
+#   groq/llama-3.1-8b-instant
+#   groq/llama-3.3-70b-versatile
+
+/memory ai model groq/llama-3.1-8b-instant
+# → "Wybrano model SDK: groq/llama-3.1-8b-instant"
+
+/memory ai status
+# → AI: włączone (SDK mode)
+#   Model SDK: groq/llama-3.1-8b-instant
+#   Poświadczenia: z OpenCode /connect
+```
+
+Po wyborze modelu plugin używa go do handoffu sesji, ekstrakcji faktów i triage testów (`/memory ai triage`). Gdy model SDK ustawiony, sekcja `ai` w `opencode.json` jest ignorowana. Reset przez `/memory ai model` (bez argumentu) przywraca config lub wyłącza AI.
+
+**Różnica vs. sekcja `ai` w configu:**
+
+| Aspekt | `ai` w `opencode.json` | Tryb SDK (`/memory ai model`) |
+| --- | --- | --- |
+| Poświadczenia | własny `apiKey` w configu | z `/connect` (OpenCode zarządza) |
+| `baseUrl` | wymagany (lub domyślny per provider) | nie potrzebny (SDK wie) |
+| Wybór modelu | statyczny w configu | runtime, przez komendę |
+| Lista modeli | ręczna | z `/memory ai models` (= `/models`) |
+| Koszt | zależy od providera | darmowe dla Groq/OpenRouter `:free` |
+| Fallback | `fallbackChain` w configu | `null` → deterministyczna ścieżka |
+
+#### Fallback (warstwowo)
+
+Przy braku `enabled`/`apiKey` → moduł wyłączony, plugin działa deterministycznie (status quo). Przy błędzie sieci/HTTP/timeout → retry 1× + próba kolejnych modeli z `fallbackChain`. Przy złej odpowiedzi JSON → retry 1× z `temperature: 0`. W każdym przypadku `aiComplete()` zwraca `null` — wywołujący używa ścieżki deterministycznej. AI nigdy nie w ścieżce krytycznej.
+
+#### Circuit breaker
+
+Po 5 kolejnych awariach w oknie 60 s AI jest **automatycznie wyłączane na 60 s** (cooldown), żeby nie tworzyć pętli błędów (np. endpoint 500 w nieskończoność). Po cooldownie breaker się resetuje i próbuje ponownie. Sukces wAnywhere zeruje licznik. Stan breakerów widoczny w `/memory ai status` (pole `lastError` + spadek licznika `calls`).
+
+Parametry (stałe w `project-context.ts`):
+- `AI_CB_THRESHOLD = 5` — liczba kolejnych awarii do przeciążenia
+- `AI_CB_WINDOW_MS = 60_000` — okno liczenia + długość cooldownu
+
+#### Ochrona przed zawieszonymi promisami (`failOpenAsync`)
+
+Wszystkie asynchroniczne ścieżki pluginu (`session.idle`, `session.compacted`, `tool.execute.after`) są owinięte w `failOpenAsync`, która **wyściga** oryginalną promisę z timeoutem 5 s (`FAIL_OPEN_ASYNC_TIMEOUT_MS`). Gdy task nie odpowie w tym czasie (np. `fetch` bez odpowiedzi, `session.prompt` wiszący na SDK), promisa zostaje odrzucona, błąd trafia do logu, a opencode nie czeka w nieskończoność — **ESC przerywa natychmiast**.
+
+#### Rotacja logów
+
+Logi błędów (`plugin-errors.log`, `plugin-ai.log`) rotują przy **1 MB** (`LOG_ROTATE_MAX_BYTES`) — po przekroczeniu zostawiane jest ostatnie 200 linii, reszta odrzucana. Zapobiega to niekontrolowanemu wzrostowi logów przy powtarzających się błędach.
+
+#### Poprawki bugów (2026-08-07)
+
+Moduł AI przeszedł 4 poprawki pokryte testami (`tests/ai-config.test.ts`):
+
+| Bug | Objaw | Naprawa |
+| --- | ---- | ------ |
+| `interpolateEnv` — regex tylko `[A-Z_]` | `apiKey: "${sk-lm-xxx:yyy}"` zostawało dosłownie → HTTP 401 | Regex `[^}]+` + rozpoznanie literałów (nie-env `${...}` zwraca wartość dosłowną) |
+| `aiUrl` — brakujące `/v1` | `baseUrl: "http://127.0.0.1:1234"` (LM Studio) → `.../chat/completions` (zły endpoint) | Auto-append `/v1` gdy brak, strip trailing slash |
+| `safeErrorString` — `[object Object]` | Obiekty bez `.message` serializowane jako `[object Object]` → bezużyteczne logi | Fallback: `e.message` → `e.error` → `JSON.stringify(e)` → `String(e)` |
+| `parseModelKey` — ucięty modelID | `"openrouter/cohere/model:free"` → `modelID="cohere"` (truncated) → OpenRouter 500 | Split tylko na pierwszym slashu (modelID może mieć slashe) |
 
 **Komendy diagnostyczne:**
-- `/memory ai status` — czy AI włączone, jaki model, liczniki wołań/ sukcesów/porażek, ostatni błąd
+- `/memory ai status` — czy AI włączone, jaki model (config lub SDK), liczniki wołań/ sukcesów/porażek, ostatni błąd
+- `/memory ai models` — lista dostępnych modeli z `/models` (do trybu SDK)
+- `/memory ai model <id>` — wybierz model chmurowy z `/models` do zadań pluginu (tryb SDK)
+- `/memory ai model` — reset modelu SDK → powrót do configa `ai` (lub wyłącz)
 - `/memory ai triage` — analizuje ostatnie nieudane testy i proponuje root cause (fallback: lista testów)
 
 **Pliki:**
 - `.opencode/memory/project-facts.ai.md` — AI-ekstrahowane fakty z dokumentacji (regenerowane na `session.idle`, gitignored)
-- `.opencode/memory/plugin-ai.log` — log błędów AI (gitignored)
+- `.opencode/memory/plugin-ai.log` — log błędów AI (gitignored, rotacja 1 MB → 200 linii)
 
 ---
 
@@ -1197,41 +1375,28 @@ Plugin może wołać tani model AI **niezależny od modelu kodującego**, konfig
 | **Fakty projektu** (`project-facts.ai.md`) | Tylko auto-fakty z manifestów (build/test/arch) | Dodatkowo konwencje i ryzyka ekstrahowane z `README.md`/`CLAUDE.md`/`AGENTS.md`/`CONTRIBUTING.md` |
 | **Triage testów** (`/memory ai triage`) | Lista nieudanych testów z `/memory test-history` | Proponowany root cause (max 5 krótkich punktów) |
 
-**Konfiguracja** (w `opencode.json` plugin options):
-
-```jsonc
-"ai": {
-  "enabled": true,
-  "provider": "openai-compatible",   // | "ollama" (lokalny, bez apiKey) | "anthropic"
-  "baseUrl": "",                      // puste = domyślny per provider
-  "apiKey": "${OPENAI_API_KEY}",      // env interpolation ${VAR}; ollama nie wymaga
-  "model": "gpt-4o-mini",             // tani model
-  "maxTokens": 800,
-  "temperature": 0,
-  "timeoutMs": 15000,
-  "fallbackChain": ["qwen2.5:7b"]     // kolejne modele do spróbowania
-}
-```
-
-Szczegóły pól w [Konfiguracja → AI module](#ai-module-ai).
-
-**Fallbacki (warstwowo):**
-
-1. Brak `ai.enabled` lub brak `apiKey` (z wyjątkiem `ollama`) → moduł wyłączony cicho, plugin działa deterministycznie (status quo).
-2. Błąd sieci / HTTP 4xx/5xx / timeout (`AbortController`) → retry 1× + próba kolejnych modeli z `fallbackChain` → `null`.
-3. Zła odpowiedź JSON (gdy `jsonMode`) → retry 1× z `temperature: 0` → `null`.
-
-W każdym przypadku `aiComplete()` zwraca `null` — wywołujący używa ścieżki deterministycznej. **AI nigdy nie w ścieżce krytycznej**: każde wywołanie jest opcjonalnym wzbogaceniem, nigdy blokadą.
+**Konfiguracja:** pełny opis pól, przykłady per-provider (`openai-compatible` / `ollama` / `anthropic`), ostrzeżenie o płytkim merge'u, sposób wklejenia `ai` do `opencode.json` oraz **tryb SDK** (wybór darmowego modelu chmurowego z `/models` bez własnego `apiKey`) — w sekcji [Konfiguracja → AI module (`ai`)](#ai-module-ai).
 
 **Pliki:**
 
 - `.opencode/memory/project-facts.ai.md` — AI-ekstrahowane fakty z dokumentacji (regenerowane na `session.idle`, gitignored)
-- `.opencode/memory/plugin-ai.log` — log błędów AI (gitignored)
+- `.opencode/memory/plugin-ai.log` — log błędów AI (gitignored, rotacja 1 MB → 200 linii)
+- `.opencode/memory/cache/ai-selected-model.json` — wybrany model SDK (przez `/memory ai model`)
 
 **Komendy:**
 
 - `/memory ai status` — czy AI włączone, provider, model, liczniki wołań/ sukcesów/porażek, ostatni czas i błąd
+- `/memory ai models` — lista modeli z `/models` (do trybu SDK)
+- `/memory ai model <providerID/modelID>` — wybierz model chmurowy (tryb SDK)
+- `/memory ai model` — reset modelu SDK → powrót do configa `ai` (lub wyłącz)
 - `/memory ai triage` — analizuje ostatnie 3 nieudane testy i proponuje root cause (fallback: lista testów)
+
+**Niezawodność:**
+
+- **Circuit breaker** — po 5 kolejnych awariach w oknie 60 s AI wyłączane na 60 s (cooldown), potem reset
+- **failOpenAsync timeout** — asynchroniczne hooki mają 5 s na odpowiedź; bez tego opencode czeka w nieskończoność
+- **Rotacja logów** — `plugin-ai.log` / `plugin-errors.log` rotują przy 1 MB (ostatnie 200 linii)
+- **Fallback warstwy** — brak `enabled`/`apiKey` → wyłączone; błąd HTTP → retry 1× + `fallbackChain`; zły JSON → retry 1× z `temperature:0`; zawsze `aiComplete()` → `null` → ścieżka deterministyczna
 
 **Priorytet danych w readProjectFacts():** auto-fakty → AI-fakty → fakty ręczne (wersjonowane). Wszystko ucięte do budżetu `maxProjectMemoryTokens`.
 
@@ -1240,6 +1405,7 @@ W każdym przypadku `aiComplete()` zwraca `null` — wywołujący używa ścież
 - AI czyta tylko pliki dokumentacji (`README.md`/`CLAUDE.md`/`AGENTS.md`/`CONTRIBUTING.md`), nie kod źródłowy
 - Prompt systemowy zawsze po polsku, z limitem `maxTokens` (domyślnie 800)
 - Timeout 15s domyślnie — AI nie blokuje `session.idle` na długo
+- **Tryb SDK:** poświadczenia z `/connect` (zarządza OpenCode), plugin nie dotyka kluczy
 
 ---
 
