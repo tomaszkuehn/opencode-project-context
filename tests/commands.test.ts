@@ -198,6 +198,65 @@ describe("plugin commands — /codemem", () => {
     const out = await h.runCommand("/codemem ai")
     expect(out).toMatch(/AI:/)
   })
+
+  it("ai models: without pluginClient.config.providers returns unavailable message", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/codemem ai models")
+    expect(out).toMatch(/client\.config\.providers niedostępne|niedost/i)
+  })
+
+  it("ai model <id>: rejects invalid format (no slash)", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/codemem ai model invalidnoslash")
+    expect(out).toMatch(/Niepoprawny format|niepoprawny/i)
+    expect(out).toMatch(/\/codemem ai models/)
+  })
+
+  it("ai model <id>: accepts providerID/modelID and reports SDK mode", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/codemem ai model openrouter/nvidia/nemotron-3-nano-30b-a3b:free")
+    expect(out).toMatch(/Wybrano model SDK:/)
+    expect(out).toContain("openrouter/nvidia/nemotron-3-nano-30b-a3b:free")
+  })
+
+  it("ai model (bare): reports not-set when no override active", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/codemem ai model")
+    expect(out).toMatch(/nie był ustawiony|nie byl|Brak zmian/i)
+  })
+
+  it("ai triage: no failed tests in history → returns no-data message", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/codemem ai triage")
+    expect(out).toMatch(/Brak nieudanych testów|brak/i)
+  })
+
+  it("ai triage: with seeded failed tests returns deterministic fallback (no AI configured)", async () => {
+    h = await createHarness()
+    h.writeMemoryFile("cache/test-history.json", JSON.stringify([
+      { timestamp: "2026-08-01T00:00:00Z", command: "vitest", exitCode: 1, summary: "boom", failed: ["tests/x.test.ts"], sessionId: "s", head: "aaa" },
+    ]))
+    h = await h.reload()
+    const out = await h.runCommand("/codemem ai triage")
+    expect(out).toMatch(/AI triage niedostępne|niedost|vitest|boom/i)
+  })
+})
+
+describe("plugin commands — /codemem compact & compact-now", () => {
+  it("compact (bare): creates compact handoff and returns confirmation", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/codemem compact")
+    expect(out).toMatch(/Compact handoff|compact/i)
+    const sess = h.readMemoryJson("active-session.json")
+    expect(sess).not.toBeNull()
+    expect(sess!.updatedAt).toBeTruthy()
+  })
+
+  it("compact-now: with client.tui.executeCommand sends session.compact command", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/codemem compact-now")
+    expect(out).toMatch(/session\.compact|Wysłano komendę|Brak API|Opcje:/i)
+  })
 })
 
 describe("plugin commands — /context", () => {
@@ -250,6 +309,111 @@ describe("plugin commands — /regression", () => {
     const out = await h.runCommand("/regression revert aaa")
     expect(out).toMatch(/safe|odmow|nie można|abort|brak|refus/i)
   })
+
+  it("feature add: requires a name", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/regression feature add")
+    expect(out).toMatch(/Użycie:|użycie/i)
+    expect(out).toContain("/regression feature add")
+  })
+
+  it("feature add: creates feature and writes to cache/features.json", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/regression feature add login-form obsługa logowania")
+    expect(out).toMatch(/Dodano feature|dodano/i)
+    expect(out).toContain("login-form")
+    expect(out).toContain("/regression feature mark login-form")
+    const features = h.readMemoryJson("cache/features.json")
+    expect(features).not.toBeNull()
+    expect(features!["login-form"]).toBeTruthy()
+    expect(features!["login-form"].name).toBe("login-form")
+  })
+
+  it("feature add: rejects duplicate name", async () => {
+    h = await createHarness()
+    await h.runCommand("/regression feature add login-form")
+    const out = await h.runCommand("/regression feature add login-form")
+    expect(out).toMatch(/już istnieje|juz istnieje/i)
+  })
+
+  it("feature list: empty → reports no features", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/regression feature list")
+    expect(out).toMatch(/Brak zdefiniowanych|brak/i)
+  })
+
+  it("feature list: shows defined features with status", async () => {
+    h = await createHarness()
+    await h.runCommand("/regression feature add login-form opis A")
+    const out = await h.runCommand("/regression feature list")
+    expect(out).toContain("=== Zdefiniowane feature'y ===")
+    expect(out).toContain("login-form")
+    expect(out).toContain("opis A")
+  })
+
+  it("feature mark: requires name", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/regression feature mark")
+    expect(out).toMatch(/Użycie:|użycie/i)
+  })
+
+  it("feature mark: rejects unknown feature", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/regression feature mark bogus")
+    expect(out).toMatch(/Nieznany feature|nieznany/i)
+    expect(out).toContain("/regression feature add bogus")
+  })
+
+  it("feature mark: marks existing feature as ok on HEAD", async () => {
+    h = await createHarness()
+    await h.runCommand("/regression feature add login-form")
+    const out = await h.runCommand("/regression feature mark login-form działa OK")
+    expect(out).toMatch(/oznaczony jako DZIAŁAJĄCY|oznaczony jako działający/i)
+    expect(out).toContain("login-form")
+  })
+
+  it("feature mark: idempotent — second mark on same HEAD reports already marked", async () => {
+    h = await createHarness()
+    await h.runCommand("/regression feature add login-form")
+    await h.runCommand("/regression feature mark login-form")
+    const out = await h.runCommand("/regression feature mark login-form")
+    expect(out).toMatch(/już oznaczony|juz oznaczony/i)
+  })
+
+  it("feature check: requires name", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/regression feature check")
+    expect(out).toMatch(/Użycie:|użycie/i)
+  })
+
+  it("feature check: rejects unknown feature", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/regression feature check bogus")
+    expect(out).toMatch(/Nieznany feature|nieznany/i)
+  })
+
+  it("feature check: unverified feature reports never marked", async () => {
+    h = await createHarness()
+    await h.runCommand("/regression feature add login-form")
+    const out = await h.runCommand("/regression feature check login-form")
+    expect(out).toContain("=== Feature: login-form ===")
+    expect(out).toMatch(/NIGDY nie był oznaczony|nigdy nie byl|nieoznaczony/i)
+  })
+
+  it("feature check: verified feature on HEAD reports OK", async () => {
+    h = await createHarness()
+    await h.runCommand("/regression feature add login-form")
+    await h.runCommand("/regression feature mark login-form")
+    const out = await h.runCommand("/regression feature check login-form")
+    expect(out).toContain("=== Feature: login-form ===")
+    expect(out).toMatch(/DZIAŁAJĄCY w HEAD|działający w head|Brak zmian/i)
+  })
+
+  it("feature (bare): unknown subcommand does not throw", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/regression feature bogus-sub")
+    expect(typeof out).toBe("string")
+  })
 })
 
 describe("plugin hooks — event lifecycle", () => {
@@ -283,7 +447,10 @@ describe("plugin hooks — command_result.txt contract", () => {
       "/codemem status", "/codemem show", "/codemem save", "/codemem test-history",
       "/codemem init", "/codemem auto-refresh", "/codemem auto", "/codemem propose",
       "/codemem commit", "/codemem clear-session", "/codemem compact-status",
-      "/codemem compact-reset", "/codemem tui", "/codemem dashboard", "/codemem ai status",
+      "/codemem compact-reset", "/codemem compact-now", "/codemem compact",
+      "/codemem tui", "/codemem dashboard",
+      "/codemem ai status", "/codemem ai models", "/codemem ai model", "/codemem ai triage",
+      "/regression feature add x", "/regression feature list", "/regression feature check x",
     ]
     for (const c of cmds) {
       h = await createHarness()

@@ -26,11 +26,74 @@ którego używa opencode, i weryfikuje:
   `createHarness()` / `h.reload()` / `h.runCommand()`.
 - `tests/stubs/@opencode-ai/plugin.ts` — minimalny stub SDK (Node nie ma
   runtime'u opencode).
-- `tests/commands.test.ts` — testy komend `/memory`, `/context`, `/regression`
+- `tests/commands.test.ts` — testy komend `/codemem`, `/context`, `/regression`
   i hooków zdarzeń.
 - `vitest.config.ts` — konfiguracja (forks pool, isolate=true dla świeżego
   stanu modułu).
 - `tests/tsconfig.json` — mapowanie `@opencode-ai/plugin` → stub.
+
+## Pokrycie komend (75 testów, 100%)
+
+Wszystkie komendy udostępniane przez plugin mają dedykowane testy:
+
+### `/codemem` (pełne pokrycie)
+
+| Subkomenda | Testy |
+| ---------- | ----- |
+| `status` | ✓ |
+| `show` | ✓ |
+| `save` | ✓ |
+| `lesson <text>` | ✓ |
+| `test-history` | ✓ (pusty + zasiany) |
+| `init` / `init --force` | ✓ (brak / istniejący / --force) |
+| `auto` / `auto-refresh` | ✓ |
+| `propose` | ✓ |
+| `commit` | ✓ |
+| `clear-session` | ✓ |
+| `clear-project` | ✓ |
+| `compact` (bare) | ✓ |
+| `compact-status` | ✓ |
+| `compact-now` | ✓ |
+| `compact-reset` | ✓ |
+| `tui` | ✓ |
+| `dashboard` | ✓ |
+| `ai` / `ai status` | ✓ |
+| `ai models` | ✓ (brak pluginClient) |
+| `ai model <id>` | ✓ (format, akceptacja, reset) |
+| `ai triage` | ✓ (pusty + zasiany fallback) |
+
+### `/context` (pełne pokrycie)
+
+| Subkomenda | Testy |
+| ---------- | ----- |
+| `budget` | ✓ |
+| `artifacts` | ✓ |
+
+### `/regression` (pełne pokrycie)
+
+| Subkomenda | Testy |
+| ---------- | ----- |
+| `last-good` | ✓ (pusty + zasiany) |
+| `suspect` | ✓ |
+| `revert` | ✓ (safeRevertOnly) |
+| `feature add` | ✓ (walidacja, zapis, duplikat) |
+| `feature list` | ✓ (pusty + zdefiniowane) |
+| `feature mark` | ✓ (walidacja, nieznany, oznaczanie, idempotencja) |
+| `feature check` | ✓ (walidacja, nieznany, nieoznaczony, oznaczony na HEAD) |
+| `feature <unknown>` | ✓ (nie rzuca wyjątku) |
+
+### Hooki zdarzeń (pełne pokrycie)
+
+| Zdarzenie | Testy |
+| --------- | ----- |
+| `session.created` | ✓ (layout pamięci) |
+| `session.idle` | ✓ (handoff + fallback bez `$`) |
+
+### Kontrakt `command_result.txt` (pełne pokrycie)
+
+Każda komenda `/codemem` i `/regression feature *` weryfikowana pod kątem
+zapisu pliku `command_result.txt` z nagłówkiem `# /<command>`. Lista komend
+w teście obejmuje wszystkie subkomendy z tabel powyżej.
 
 ## Wykryte bugi (oznaczone `it.fails` — test dokumentuje błąd)
 
