@@ -5,7 +5,7 @@ description: Manage project memory (status, show, save, clear-session, clear-pro
 You are executing the memory utility subcommand: "$ARGUMENTS".
 
 ## FIRST: deterministic result (precomputed by the plugin)
-If the file `.opencode/memory/command_result.txt` exists and its FIRST line begins with `# /memory` or `# /context` or `# /regression` AND the command token after `# ` matches "$ARGUMENTS" (or contains this subcommand), then output the ENTIRE file contents verbatim (from line 2 onward) as your whole reply and STOP. Do not add commentary.
+If the file `.opencode/memory/command_result.txt` exists and its FIRST line begins with `# /codemem` or `# /context` or `# /regression` AND the command token after `# ` matches "$ARGUMENTS" (or contains this subcommand), then output the ENTIRE file contents verbatim (from line 2 onward) as your whole reply and STOP. Do not add commentary.
 
 Otherwise (plugin absent or no matching precomputed result), follow the manual rules below.
 

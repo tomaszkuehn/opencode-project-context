@@ -181,7 +181,7 @@ function setupToastsAndDialogs(
         ui?.toast?.({
           variant: "warning",
           title: "Kontekst",
-          message: `${ctxPct}% (compact@${threshold}%) — /memory compact-now`,
+          message: `${ctxPct}% (compact@${threshold}%) — /codemem compact-now`,
           duration: 5000,
         })
       }
@@ -195,7 +195,7 @@ function setupToastsAndDialogs(
       ui?.toast?.({
         variant: "error",
         title: "Dysk",
-        message: `Pamięć pluginu ${fmtBytes(m.diskBytes ?? 0)} (${diskPct}% limitu) — /memory clear-session`,
+        message: `Pamięć pluginu ${fmtBytes(m.diskBytes ?? 0)} (${diskPct}% limitu) — /codemem clear-session`,
         duration: 7000,
       })
     }
@@ -208,7 +208,7 @@ function setupToastsAndDialogs(
 }
 
 // ============================================================================
-// 2. Własny ekran /memory dashboard (route)
+// 2. Własny ekran /codemem dashboard (route)
 // ============================================================================
 
 function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginApi }): unknown {
@@ -259,8 +259,8 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
     <box flexDirection="column" border={true} borderStyle="rounded" borderColor={t.textMuted} padding={0} paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1}>
       {/* Header */}
       <box flexDirection="row">
-        <text fg={t.primary} attributes={1}>memory dashboard</text>
-        <text fg={t.textMuted}>  /memory dashboard  ·  refresh 3s</text>
+        <text fg={t.primary} attributes={1}>codemem dashboard</text>
+        <text fg={t.textMuted}>  /codemem dashboard  ·  refresh 3s</text>
       </box>
 
       {/* --- Section 1: Token savings --- */}
@@ -430,7 +430,7 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
 
       {/* Footer */}
       <box flexDirection="row" marginTop={1}>
-        <text fg={t.textMuted}>Esc = zamknij · /memory status = tekstowy odpowiednik</text>
+        <text fg={t.textMuted}>Esc = zamknij · /codemem status = tekstowy odpowiednik</text>
       </box>
     </box>
   )
@@ -538,7 +538,7 @@ const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
         description: "Otwórz pełnoekranowy dashboard pamięci projektu (route: memory-dashboard)",
         category: "Memory",
         keybind: "ctrl+d",
-        slash: { name: "memory dashboard", aliases: ["md"] },
+        slash: { name: "codemem dashboard", aliases: ["md"] },
         onSelect: () => {
           try {
             api.route.navigate("memory-dashboard")

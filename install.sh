@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Server plugin + komendy
 PLUGINS_SRC="$SCRIPT_DIR/.opencode/plugins/project-context.ts"
-CMD_MEMORY_SRC="$SCRIPT_DIR/.opencode/command/memory.md"
+CMD_MEMORY_SRC="$SCRIPT_DIR/.opencode/command/codemem.md"
 CMD_CONTEXT_SRC="$SCRIPT_DIR/.opencode/command/context.md"
 CMD_REGRESSION_SRC="$SCRIPT_DIR/.opencode/command/regression.md"
 
@@ -90,7 +90,7 @@ ensure_dir "$TARGET/.opencode/command"
 ensure_dir "$TARGET/.opencode/memory"
 
 cp "$PLUGINS_SRC"      "$TARGET/.opencode/plugins/project-context.ts"
-cp "$CMD_MEMORY_SRC"   "$TARGET/.opencode/command/memory.md"
+cp "$CMD_MEMORY_SRC"   "$TARGET/.opencode/command/codemem.md"
 cp "$CMD_CONTEXT_SRC"  "$TARGET/.opencode/command/context.md"
 cp "$CMD_REGRESSION_SRC" "$TARGET/.opencode/command/regression.md"
 say "Skopiowano server plugin i komendy"
@@ -273,7 +273,7 @@ Następne kroki:
 
   1. Uzupełnij:  $TARGET/.opencode/memory/project-facts.md
   2. Zrestartuj OpenCode (konfiguracja nie przeładowuje się na gorąco)
-  3. W TUI wpisz:  /memory status   aby zweryfikować server plugin
+  3. W TUI wpisz:  /codemem status   aby zweryfikować server plugin
   4. Na dole ekranu TUI powinien pojawić się pasek statusu "memory: tools: ..."
 
 Jeśli pasek TUI się nie pojawia — zobacz sekcję "TUI plugin — rozwiązywanie" w README.
@@ -288,7 +288,7 @@ Następne kroki:
 
   1. Uzupełnij:  $TARGET/.opencode/memory/project-facts.md
   2. Zrestartuj OpenCode
-  3. Wpisz:  /memory status   aby zweryfikować działanie
+  3. Wpisz:  /codemem status   aby zweryfikować działanie
 
 EOF
 fi

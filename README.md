@@ -16,7 +16,7 @@ Plugin zbudowany według specyfikacji `PLUGIN.md`.
 - [Struktura plików](#struktura-plików)
 - [Konfiguracja](#konfiguracja)
 - [Dostępne komendy](#dostępne-komendy)
-  - [`/memory <subkomenda>`](#memory-subkomenda)
+  - [`/codemem <subkomenda>`](#codemem-subkomenda)
   - [`/context <subkomenda>`](#context-subkomenda)
   - [`/regression <subkomenda>`](#regression-subkomenda)
 - [Narzędzie `read_artifact`](#narzędzie-read_artifact)
@@ -29,7 +29,7 @@ Plugin zbudowany według specyfikacji `PLUGIN.md`.
   - [4. Wykrywanie i cofanie regresji](#4-wykrywanie-i-cofanie-regresji-regression)
   - [5. Detekcja rozmiaru kontekstu i kompaktacja](#5-detekcja-rozmiaru-kontekstu-i-kompaktacja-compactmode)
   - [6. Audyt regresji wielomodelowy — IJFW cross_audit (Trident)](#6-audyt-regresji-wielomodelowy--ijfw-cross_audit-trident)
-  - [7. Lekcje projektu (`/memory lesson`)](#7-lekcje-projektu--memory-lesson)
+  - [7. Lekcje projektu (`/codemem lesson`)](#7-lekcje-projektu--codemem-lesson)
   - [8. Heurystyka trudnych problemów](#8-heurystyka-trudnych-problemów)
   - [9. Ekstraktory platformy docelowej](#9-ekstraktory-platformy-docelowej)
   - [10. Moduł AI (Opcja A — własny tani model)](#10-moduł-ai-opcja-a--własny-tani-model)
@@ -89,7 +89,7 @@ Co robi skrypt krok po kroku:
 
 1. Kopiuje `project-context.ts` → `.opencode/plugins/` (server plugin)
 2. Kopiuje `memory-tui.tsx` + `tsconfig.json` → `.opencode/plugins/` (TUI plugin)
-3. Kopiuje `memory.md`, `context.md`, `regression.md` → `.opencode/command/`
+3. Kopiuje `codemem.md`, `context.md`, `regression.md` → `.opencode/command/`
 4. Tworzy katalog `.opencode/memory/` i szablon `project-facts.md` (tylko jeśli brak)
 5. Tworzy `opencode.json` z rejestracją server pluginu i konfiguracją (tylko jeśli brak)
 6. Tworzy `.opencode/tui.json` z rejestracją TUI pluginu (tylko jeśli brak)
@@ -113,7 +113,7 @@ ls node_modules/@opentui/solid             # biblioteki runtime TUI
 cat opencode.json                          # rejestracja server pluginu
 ```
 
-Następnie zrestartuj OpenCode i wpisz `/memory status`, aby potwierdzić działanie server pluginu. Na dole ekranu TUI powinien pojawić się pasek statusu `memory: tools: ...` (TUI plugin).
+Następnie zrestartuj OpenCode i wpisz `/codemem status`, aby potwierdzić działanie server pluginu. Na dole ekranu TUI powinien pojawić się pasek statusu `memory: tools: ...` (TUI plugin).
 
 ### Opcja B: ręczna instalacja w istniejącym repo
 
@@ -128,7 +128,7 @@ Następnie zrestartuj OpenCode i wpisz `/memory status`, aby potwierdzić dział
 2. Skopiuj komendy:
 
 ```
-<twoje-repo>/.opencode/command/memory.md
+<twoje-repo>/.opencode/command/codemem.md
 <twoje-repo>/.opencode/command/context.md
 <twoje-repo>/.opencode/command/regression.md
 ```
@@ -247,7 +247,7 @@ Plugin tworzy i utrzymuje następujący układ w repozytorium:
       memory-tui.tsx              # TUI plugin — pasek statusu (wersjonowany)
       tsconfig.json               # typecheck config dla memory-tui.tsx (wersjonowany)
     command/
-      memory.md                   # komenda /memory
+      codemem.md                  # komenda /codemem
       context.md                  # komenda /context
       regression.md               # komenda /regression
     memory/
@@ -346,7 +346,7 @@ Wszystkie pola sekcji `contextOptimizer` w `opencode.json` są opcjonalne — br
 | `regressionTrackHead`      | `true`    | Zapisuj git SHA przy każdym uruchomieniu testów (korelacja regresji) |
 | `regressionSafeRevertOnly` | `true`    | Wymagaj `confirm` przy `git checkout <sha> -- <file>`; bez auto `--hard` |
 | `autoExtractFacts`         | `true`    | Włącz deterministyczne ekstraktory budujące `project-facts.auto.md` |
-| `autoExtractOnEvents`      | `["session.idle","session.compacted"]` | Zdarzenia, na których regenerowany jest `.auto.md`; pusta lista = tylko ręcznie (`/memory auto-refresh`) |
+| `autoExtractOnEvents`      | `["session.idle","session.compacted"]` | Zdarzenia, na których regenerowany jest `.auto.md`; pusta lista = tylko ręcznie (`/codemem auto-refresh`) |
 | `factsAutoGlobDepth`       | `3`       | Głębokość skanowania katalogów dla sekcji Architektura |
 | `compactMode`             | `"suggest"` | Tryb kompaktacji: `auto` (OpenCode kompaktuje sam), `suggest` (toast + status), `confirm` (toast + ręczne potwierdzenie), `off` |
 | `maxContextTokens`        | `0`       | Limit kontekstu dla progu kompaktacji; `0` = autodetekcja z `Model.limit.context` (fallback 200000) |
@@ -497,10 +497,10 @@ Plugin woła `client.session.prompt()` z wybranym modelem, korzystając z kluczy
 **Komendy:**
 
 ```text
-/memory ai models              # lista dostępnych modeli (to samo źródło co /models)
-/memory ai model <providerID/modelID>   # wybierz model do zadań pluginu
-/memory ai model               # reset → powrót do configa ai (lub wyłącz)
-/memory ai status              # diagnostyka: wybrany model + liczniki
+/codemem ai models              # lista dostępnych modeli (to samo źródło co /models)
+/codemem ai model <providerID/modelID>   # wybierz model do zadań pluginu
+/codemem ai model               # reset → powrót do configa ai (lub wyłącz)
+/codemem ai status              # diagnostyka: wybrany model + liczniki
 ```
 
 **Przykład — Groq (darmowy tier):**
@@ -508,30 +508,30 @@ Plugin woła `client.session.prompt()` z wybranym modelem, korzystając z kluczy
 1. W OpenCode: `/connect` → dodaj providera `groq` z kluczem z [console.groq.com](https://console.groq.com)
 2. W TUI:
 ```text
-/memory ai models
+/codemem ai models
 # wyświetli listę, m.in.:
 #   groq/llama-3.1-8b-instant
 #   groq/llama-3.3-70b-versatile
 
-/memory ai model groq/llama-3.1-8b-instant
+/codemem ai model groq/llama-3.1-8b-instant
 # → "Wybrano model SDK: groq/llama-3.1-8b-instant"
 
-/memory ai status
+/codemem ai status
 # → AI: włączone (SDK mode)
 #   Model SDK: groq/llama-3.1-8b-instant
 #   Poświadczenia: z OpenCode /connect
 ```
 
-Po wyborze modelu plugin używa go do handoffu sesji, ekstrakcji faktów i triage testów (`/memory ai triage`). Gdy model SDK ustawiony, sekcja `ai` w `opencode.json` jest ignorowana. Reset przez `/memory ai model` (bez argumentu) przywraca config lub wyłącza AI.
+Po wyborze modelu plugin używa go do handoffu sesji, ekstrakcji faktów i triage testów (`/codemem ai triage`). Gdy model SDK ustawiony, sekcja `ai` w `opencode.json` jest ignorowana. Reset przez `/codemem ai model` (bez argumentu) przywraca config lub wyłącza AI.
 
 **Różnica vs. sekcja `ai` w configu:**
 
-| Aspekt | `ai` w `opencode.json` | Tryb SDK (`/memory ai model`) |
+| Aspekt | `ai` w `opencode.json` | Tryb SDK (`/codemem ai model`) |
 | --- | --- | --- |
 | Poświadczenia | własny `apiKey` w configu | z `/connect` (OpenCode zarządza) |
 | `baseUrl` | wymagany (lub domyślny per provider) | nie potrzebny (SDK wie) |
 | Wybór modelu | statyczny w configu | runtime, przez komendę |
-| Lista modeli | ręczna | z `/memory ai models` (= `/models`) |
+| Lista modeli | ręczna | z `/codemem ai models` (= `/models`) |
 | Koszt | zależy od providera | darmowe dla Groq/OpenRouter `:free` |
 | Fallback | `fallbackChain` w configu | `null` → deterministyczna ścieżka |
 
@@ -541,7 +541,7 @@ Przy braku `enabled`/`apiKey` → moduł wyłączony, plugin działa determinist
 
 #### Circuit breaker
 
-Po 5 kolejnych awariach w oknie 60 s AI jest **automatycznie wyłączane na 60 s** (cooldown), żeby nie tworzyć pętli błędów (np. endpoint 500 w nieskończoność). Po cooldownie breaker się resetuje i próbuje ponownie. Sukces wAnywhere zeruje licznik. Stan breakerów widoczny w `/memory ai status` (pole `lastError` + spadek licznika `calls`).
+Po 5 kolejnych awariach w oknie 60 s AI jest **automatycznie wyłączane na 60 s** (cooldown), żeby nie tworzyć pętli błędów (np. endpoint 500 w nieskończoność). Po cooldownie breaker się resetuje i próbuje ponownie. Sukces wAnywhere zeruje licznik. Stan breakerów widoczny w `/codemem ai status` (pole `lastError` + spadek licznika `calls`).
 
 Parametry (stałe w `project-context.ts`):
 - `AI_CB_THRESHOLD = 5` — liczba kolejnych awarii do przeciążenia
@@ -567,11 +567,11 @@ Moduł AI przeszedł 4 poprawki pokryte testami (`tests/ai-config.test.ts`):
 | `parseModelKey` — ucięty modelID | `"openrouter/cohere/model:free"` → `modelID="cohere"` (truncated) → OpenRouter 500 | Split tylko na pierwszym slashu (modelID może mieć slashe) |
 
 **Komendy diagnostyczne:**
-- `/memory ai status` — czy AI włączone, jaki model (config lub SDK), liczniki wołań/ sukcesów/porażek, ostatni błąd
-- `/memory ai models` — lista dostępnych modeli z `/models` (do trybu SDK)
-- `/memory ai model <id>` — wybierz model chmurowy z `/models` do zadań pluginu (tryb SDK)
-- `/memory ai model` — reset modelu SDK → powrót do configa `ai` (lub wyłącz)
-- `/memory ai triage` — analizuje ostatnie nieudane testy i proponuje root cause (fallback: lista testów)
+- `/codemem ai status` — czy AI włączone, jaki model (config lub SDK), liczniki wołań/ sukcesów/porażek, ostatni błąd
+- `/codemem ai models` — lista dostępnych modeli z `/models` (do trybu SDK)
+- `/codemem ai model <id>` — wybierz model chmurowy z `/models` do zadań pluginu (tryb SDK)
+- `/codemem ai model` — reset modelu SDK → powrót do configa `ai` (lub wyłącz)
+- `/codemem ai triage` — analizuje ostatnie nieudane testy i proponuje root cause (fallback: lista testów)
 
 **Pliki:**
 - `.opencode/memory/project-facts.ai.md` — AI-ekstrahowane fakty z dokumentacji (regenerowane na `session.idle`, gitignored)
@@ -581,18 +581,18 @@ Moduł AI przeszedł 4 poprawki pokryte testami (`tests/ai-config.test.ts`):
 
 ## Dostępne komendy
 
-Plugin udostępnia dwa zestawy komend wpisywane w TUI OpenCode: `/memory` (zarządzanie pamięcią projektu) oraz `/context` (diagnostyka budżetu i artefaktów), a także `/regression`. Obsługa odbywa się przez hooki `command.execute.before` i `tui.command.execute`. Wszystkie komendy działają lokalnie, modyfikują wyłącznie dane w `.opencode/memory/` i nie wpływają na pliki źródłowe projektu.
+Plugin udostępnia dwa zestawy komend wpisywane w TUI OpenCode: `/codemem` (zarządzanie pamięcią projektu) oraz `/context` (diagnostyka budżetu i artefaktów), a także `/regression`. Obsługa odbywa się przez hooki `command.execute.before` i `tui.command.execute`. Wszystkie komendy działają lokalnie, modyfikują wyłącznie dane w `.opencode/memory/` i nie wpływają na pliki źródłowe projektu.
 
 > **Ważne o ograniczeniach OpenCode (wykryte 2026-08-04):** komendy z plików `.opencode/command/*.md` są przez OpenCode **zawsze** wykonywane jako prompt do modelu (`command.execute.before` → `prompt()` → LLM). OpenCode nie wspiera jeszcze pomijania LLM dla komend (feature request #28292 — `noReply`). Dlatego:
 > 1. Plugin liczy wynik deterministycznie i zapisuje go do `.opencode/memory/command_result.txt` (hook `command.execute.before`).
 > 2. Szablony `.opencode/command/{memory,context,regression}.md` każą modelowi zwrócić ten plik 1:1 — wynik jest wtedy deterministyczny.
-> 3. Gdy pluginu brak (np. projekt bez `.opencode/plugins/`), szablony zawierają **twarde zasady bezpieczeństwa**: model **nigdy** nie może wykonać `git commit`/`add`/`push`/`reset`/`clean`/`checkout <sha> -- .` ani modyfikować plików poza `.opencode/memory/`. To eliminuje przypadek, w którym `/memory save` było interpretowane jako „zacomituj zmiany".
+> 3. Gdy pluginu brak (np. projekt bez `.opencode/plugins/`), szablony zawierają **twarde zasady bezpieczeństwa**: model **nigdy** nie może wykonać `git commit`/`add`/`push`/`reset`/`clean`/`checkout <sha> -- .` ani modyfikować plików poza `.opencode/memory/`. To eliminuje przypadek, w którym `/codemem save` było interpretowane jako „zacomituj zmiany".
 
-### `/memory <subkomenda>`
+### `/codemem <subkomenda>`
 
 Komendy zarządzania pamięcią projektu i bieżącą sesją.
 
-#### `/memory status`
+#### `/codemem status`
 
 Wyświetla szybki przegląd stanu pamięci pluginu. Przydatne do weryfikacji, czy plugin poprawnie zidentyfikował worktree i czy pamięć jest zainicjowana.
 
@@ -619,7 +619,7 @@ Saved: ~12340 tokens (49360 chars) — filtracja + deduplikacja
 Context: 165432 / 200000 tokens (mode=suggest)
 ```
 
-#### `/memory show`
+#### `/codemem show`
 
 Wyświetla pełną zawartość trzech elementów:
 - `project-facts.md` (po ewentualnym ucięciu do budżetu)
@@ -628,11 +628,11 @@ Wyświetla pełną zawartość trzech elementów:
 
 Służy do inspekcji, co dokładnie agent otrzymał na starcie sesji i jakie dane są zapamiętane. Przydatne przy debugowaniu niespójności zachowania agenta między sesjami.
 
-#### `/memory save`
+#### `/codemem save`
 
 Wymusza natychmiastowy zapis bieżącego handoffu do `active-session.json` oraz do `session-history/<session-id>.json`. Normalnie handoff zapisuje się automatycznie przy `session.idle` i `session.compacted` — ta komenda pozwala zachować stan w dowolnym momencie (np. przed ręcznym zakończeniem pracy).
 
-#### `/memory clear-session`
+#### `/codemem clear-session`
 
 Czyści nietrwałe dane bieżącej sesji:
 - pamięć deduplikacji (`SeenContext`)
@@ -642,17 +642,17 @@ Czyści nietrwałe dane bieżącej sesji:
 
 **Nie usuwa** `project-facts.md` ani artefaktów. Używaj, gdy sesja „zapchała się" powtórzonymi danymi lub chcesz zacząć czystą sesję z zachowaniem faktów projektu.
 
-#### `/memory clear-project`
+#### `/codemem clear-project`
 
 Usuwa **całą** pamięć lokalną projektu: cały katalog `.opencode/memory/` (w tym `project-facts.md`, `active-session.json`, historia sesji, artefakty, cache, indeksy). Po operacji katalog pamięci jest odtwarzany pusty.
 
 > ⚠️ **Uwaga:** W MVP komenda nie pyta o potwierdzenie — wykonuje się natychmiast. Jeśli wersjonujesz `project-facts.md`, utracone fakty można odzyskać z Git. Po resecie utwórz ponownie szablon `project-facts.md`.
 
-#### `/memory compact`
+#### `/codemem compact`
 
 Ręcznie buduje krótki handoff z bieżącego stanu sesji (analogicznie do `session.compacted`) i zapisuje go do `active-session.json`. Przydatne, gdy chcesz wymusić odświeżenie handoffu bez czekania na zdarzenie `session.idle`, np. po zakończeniu istotnego etapu pracy.
 
-#### `/memory propose`
+#### `/codemem propose`
 
 Analizuje zagregowany ślad sesji (`session-trace.json`) i historię testów (`test-history.json`) oraz generuje **propozycje** wpisów do `project-facts.md`, nie modyfikując pliku. Propozycje zapisywane są w `.opencode/memory/cache/proposed-facts.md` i wypisywane w TUI.
 
@@ -667,22 +667,22 @@ Służy do stopniowego budowania `project-facts.md` bez ręcznego notowania — 
 Aby dopisać propozycje do faktów projektu:
 
 ```
-/memory commit
+/codemem commit
 ```
 
-#### `/memory commit`
+#### `/codemem commit`
 
-Dopisuje wygenerowane wcześniej propozycje (z `/memory propose`) do `project-facts.md` pod markerem `<!-- === propozycje pluginu === -->`, czyści bufor propozycji i zachęca do ręcznego przejrzenia (aby utrzymać zwięzłość w budżecie tokenów).
+Dopisuje wygenerowane wcześniej propozycje (z `/codemem propose`) do `project-facts.md` pod markerem `<!-- === propozycje pluginu === -->`, czyści bufor propozycji i zachęca do ręcznego przejrzenia (aby utrzymać zwięzłość w budżecie tokenów).
 
-#### `/memory auto`
+#### `/codemem auto`
 
 Wyświetla zawartość `project-facts.auto.md` — pliku regenerowanego automatycznie przez deterministyczne ekstraktory (nie wymaga zatwierdzania).
 
-#### `/memory auto-refresh`
+#### `/codemem auto-refresh`
 
 Ręcznie uruchamia regenerację `project-facts.auto.md`. Przydatne po zmianie stacku, dodaniu manifestu (np. `Cargo.toml`, `pyproject.toml`) lub instalacji nowego narzędzia, bez czekania na `session.idle`.
 
-#### `/memory init [--force]`
+#### `/codemem init [--force]`
 
 Inicjalizuje `project-facts.md` wstępnie wypełnionym szablonem z auto-wykrytymi podpowiedziami:
 
@@ -694,11 +694,11 @@ Inicjalizuje `project-facts.md` wstępnie wypełnionym szablonem z auto-wykrytym
 Idempotentny: nie nadpisuje nietrywialnego `project-facts.md`. Nadpisuje tylko gdy plik nie istnieje lub jest domyślnym szablonem z `install.sh` (zawiera `# Architektura` + `(uzupełnij` w pierwszych liniach). `--force` nadpisuje zawsze (z backupem `.tpl.bak` dla domyślnego szablonu).
 
 ```
-/memory init              # wypełnij szablon podpowiedziami (jeśli brak/domyślny)
-/memory init --force      # nadpisz istniejący project-facts.md
+/codemem init              # wypełnij szablon podpowiedziami (jeśli brak/domyślny)
+/codemem init --force      # nadpisz istniejący project-facts.md
 ```
 
-#### `/memory compact-status`
+#### `/codemem compact-status`
 
 Wyświetla stan detekcji rozmiaru kontekstu i progu kompaktacji: bieżący rozmiar (`AssistantMessage.tokens.input`), limit (ręczny/autodetekcja/fallback 200k), próg w procentach, wykorzystanie i pozostałe tokeny. Gdy próg przekroczony, podaje instrukcję zależną od `compactMode`.
 
@@ -715,18 +715,18 @@ Pozostało:      34 568 tokens
 Sugestia pokazana: tak
 
 ⚠ Próg przekroczony — sugerowana kompaktacja.
-Aby skompaktować: użyj natywnej komendy OpenCode (np. /compact w TUI) lub /memory compact-now.
+Aby skompaktować: użyj natywnej komendy OpenCode (np. /compact w TUI) lub /codemem compact-now.
 ```
 
-#### `/memory compact-now`
+#### `/codemem compact-now`
 
 Próbuje wymusić kompaktację przez `tui.executeCommand` (komenda `session.compact`). Jeśli OpenCode nie wspiera tej komendy przez API, wypisuje instrukcję ręczną. W trybie `auto` z `compaction.auto: true` (konfiguracja OpenCode) kompaktacja nastąpi automatycznie przy następnym `message`.
 
-#### `/memory compact-reset`
+#### `/codemem compact-reset`
 
 Resetuje flagę sugestii (żeby toast mógł się pokazać ponownie przy kolejnym przekroczeniu). Nie wpływa na sam rozmiar kontekstu.
 
-#### `/memory test-history`
+#### `/codemem test-history`
 
 Wyświetla historię uruchomień testów/buildów (najnowsze na górze, domyślnie 15 pozycji). Dla każdego wpisu pokazuje: timestamp, status (OK/FAIL), komendę, podsumowanie i listę failed testów. Służy do śledzenia, kiedy dany test zaczął padać lub kiedy build się zepsuł, bez ponownego analizowania logów. Maksymalnie `maxTestHistoryEntries` (domyślnie 50) ostatnich uruchomień.
 
@@ -741,30 +741,30 @@ Przykład wyjścia:
     Build complete
 ```
 
-#### `/memory ai status`
+#### `/codemem ai status`
 
 Pokazuje stan modułu AI: czy włączony, provider, model, liczniki wołań/ sukcesów/porażek, ostatni czas odpowiedzi i ostatni błąd. Gdy AI wyłączone, podpowiada jak je skonfigurować.
 
-#### `/memory ai triage`
+#### `/codemem ai triage`
 
-Analizuje ostatnie nieudane testy (do 3 z historii) i proponuje prawdopodobny root cause. Wymaga włączonego `ai`. Przy braku AI lub błędzie — fallback: deterministyczna lista nieudanych testów (jak `/memory test-history` filtrowana po FAIL).
+Analizuje ostatnie nieudane testy (do 3 z historii) i proponuje prawdopodobny root cause. Wymaga włączonego `ai`. Przy braku AI lub błędzie — fallback: deterministyczna lista nieudanych testów (jak `/codemem test-history` filtrowana po FAIL).
 
-#### `/memory lesson <opis>`
+#### `/codemem lesson <opis>`
 
 Ręcznie dopisuje lekcję do wersjonowanego `project-facts.md` (sekcja `## Lekcje`, z datą ISO). Służy do zapisywania **trudnych problemów rozwiązanych po wielu iteracjach**, nietrywialnych decyzji i pułapek, na które agent może natrafić ponownie w przyszłej sesji. Lekcje są widoczne dla agenta na starcie każdej sesji (w ramach `project-facts`).
 
 Walidacja: tekst niepusty, do 600 znaków (skróć do: problem + rozwiązanie + dlaczego). Jeśli sekcja `## Lekcje` nie istnieje w `project-facts.md`, jest tworzona; jeśli istnieje, lekcja jest dopisywana pod nią.
 
 ```
-/memory lesson SDK TUI: slots.register kontrakt to {slots:{name:(ctx,props)=>JSX}}, nie {name,render} — zajęło 3 iteracje
-/memory lesson regressionRevert: git checkout <sha> -- <file> w trybie bezpiecznym wymaga confirm — bez tego silent no-op
+/codemem lesson SDK TUI: slots.register kontrakt to {slots:{name:(ctx,props)=>JSX}}, nie {name,render} — zajęło 3 iteracje
+/codemem lesson regressionRevert: git checkout <sha> -- <file> w trybie bezpiecznym wymaga confirm — bez tego silent no-op
 ```
 
 Lekcje można potem swobodnie edytować w `project-facts.md` (sekcja wersjonowana w Git). Są wstrzykiwane razem z auto-faktami w ramach budżetu `maxProjectMemoryTokens`.
 
-> **Wskazówka:** Jeśli problem był naprawdę trudny (≥3 iteracje build/test, zakończone sukcesem), komenda `/memory propose` automatycznie go wykryje i podpowie dodanie lekcji — patrz [Heurystyka trudnych problemów](#8-heurystyka-trudnych-problemów).
+> **Wskazówka:** Jeśli problem był naprawdę trudny (≥3 iteracje build/test, zakończone sukcesem), komenda `/codemem propose` automatycznie go wykryje i podpowie dodanie lekcji — patrz [Heurystyka trudnych problemów](#8-heurystyka-trudnych-problemów).
 
-#### `/memory tui`
+#### `/codemem tui`
 
 Tekstowy odpowiednik widoku TUI — działa w trybie CLI (non-interactive), gdzie sloty TUI nie są renderowane. Zwraca 5-linijkowy blok z tymi samymi danymi co pasek TUI: oszczędność tokenów, rozmiar na dysku vs limit 200 MB, budżet kontekstu vs próg kompaktacji, stan sesji (handoff, modified, decisions, blockers, HEAD, dirty, LSP, last-good), limity cache (dedup, test-history). Ostrzeżenia (`⚠`) markują przekroczenia: dysk ≥90%, kontekst ≥ próg kompaktacji.
 
@@ -780,7 +780,7 @@ dedup cache: 127/500 · tests: 14/50
 
 W trybie TUI (interaktywnym) ten sam widok jest odświeżany na żywo co 3 s w pasku statusu pluginu `memory-tui.tsx`.
 
-#### `/memory dashboard`
+#### `/codemem dashboard`
 
 Pełnoekranowy dashboard TUI — własny route `memory-dashboard` z 8 sekcjami: oszczędność tokenów, dysk, budżet kontekstu, sesja (goal/status/blokery/błędy LSP), cache, **AI module** (model, liczniki wołań, ostatni błąd), historia testów (10 ostatnich), artefakty (10 największych). Odświeżanie co 3 s. Dostępny w trybie interaktywnym przez `api.route.navigate("memory-dashboard")` lub toast przy przekroczeniu progu.
 
@@ -788,9 +788,9 @@ Pełnoekranowy dashboard TUI — własny route `memory-dashboard` z 8 sekcjami: 
 
 Plugin `memory-tui.tsx` automatycznie pokazuje powiadomienia w trybie interaktywnym:
 
-- **Toast warning** gdy kontekst ≥ próg kompaktacji (mode=suggest) — `Kontekst 82% — /memory compact-now`
+- **Toast warning** gdy kontekst ≥ próg kompaktacji (mode=suggest) — `Kontekst 82% — /codemem compact-now`
 - **Dialog confirm** gdy kontekst ≥ próg kompaktacji (mode=confirm) — `Skompaktować sesję? [Y/N]`
-- **Toast error** gdy dysk ≥ 90% limitu 200 MB — `Pamięć pluginu 180MB (90%) — /memory clear-session`
+- **Toast error** gdy dysk ≥ 90% limitu 200 MB — `Pamięć pluginu 180MB (90%) — /codemem clear-session`
 
 Sprawdzanie co 5 s, deduplikacja (toast nie powtarza się dopóki warunek nie zniknie i nie wróci).
 
@@ -973,26 +973,26 @@ To klasyczny scenariusz dla `/regression`: agent dostaje zgłoszenie o błędzie
 ### Szybkie przykłady
 
 ```
-/memory status            # czy plugin działa poprawnie?
-/memory show              # co agent dostał na starcie?
-/memory save               # zachowaj stan przed przerwą
-/memory clear-session     # wyczyść sesję, zostaw fakty
-/memory clear-project     # usuń całą pamięć projektu (uwaga: niszczy project-facts.md)
-/memory compact           # odśwież handoff ręcznie
-/memory compact-status   # rozmiar kontekstu + próg kompaktacji
-/memory compact-now      # wymuś kompaktację (tui.executeCommand: session.compact)
-/memory compact-reset    # zresetuj flagę sugestii
-/memory propose           # zobacz propozycje faktów z sesji
-/memory commit            # dopisz propozycje do project-facts.md
-/memory auto              # pokaż auto-wygenerowane fakty (.auto.md)
-/memory auto-refresh     # ręcznie zregeneruj .auto.md
-/memory init             # wypełnij project-facts.md podpowiedziami z repo
-/memory test-history      # historia uruchomień testów/buildów
-/memory lesson <text>    # zapisz trudną lekcję do project-facts.md (sekcja ## Lekcje)
-/memory ai status         # czy AI włączone? jaki model? liczniki wołań
-/memory ai triage         # root-cause ostatnich nieudanych testów (AI lub fallback)
-/memory tui              # tekstowy widok TUI (działa w CLI)
-/memory dashboard        # pełnoekranowy dashboard TUI (route: memory-dashboard)
+/codemem status            # czy plugin działa poprawnie?
+/codemem show              # co agent dostał na starcie?
+/codemem save               # zachowaj stan przed przerwą
+/codemem clear-session     # wyczyść sesję, zostaw fakty
+/codemem clear-project     # usuń całą pamięć projektu (uwaga: niszczy project-facts.md)
+/codemem compact           # odśwież handoff ręcznie
+/codemem compact-status   # rozmiar kontekstu + próg kompaktacji
+/codemem compact-now      # wymuś kompaktację (tui.executeCommand: session.compact)
+/codemem compact-reset    # zresetuj flagę sugestii
+/codemem propose           # zobacz propozycje faktów z sesji
+/codemem commit            # dopisz propozycje do project-facts.md
+/codemem auto              # pokaż auto-wygenerowane fakty (.auto.md)
+/codemem auto-refresh     # ręcznie zregeneruj .auto.md
+/codemem init             # wypełnij project-facts.md podpowiedziami z repo
+/codemem test-history      # historia uruchomień testów/buildów
+/codemem lesson <text>    # zapisz trudną lekcję do project-facts.md (sekcja ## Lekcje)
+/codemem ai status         # czy AI włączone? jaki model? liczniki wołań
+/codemem ai triage         # root-cause ostatnich nieudanych testów (AI lub fallback)
+/codemem tui              # tekstowy widok TUI (działa w CLI)
+/codemem dashboard        # pełnoekranowy dashboard TUI (route: memory-dashboard)
 /context budget           # czy limity są dobrze dobrane?
 /context artifacts        # które pełne logi są dostępne?
 /regression last-good     # kiedy testy przeszły ostatnio?
@@ -1039,7 +1039,7 @@ Dzięki temu agent pobiera dokładnie interesujący fragment logu/diffu zamiast 
 4. Pobiera minimalny stan Git (branch, krótki SHA HEAD, zmodyfikowane pliki, ostatnie 20 zmian).
 5. Buduje zwięzły blok `PROJECT MEMORY` i wstrzykuje go do **system prompta** sesji przez hook `experimental.chat.system.transform` (≤ `maxProjectMemoryTokens`).
 
-> **Niewidoczne w oknie czatu:** kontekst startowy trafia do system prompta modela, a nie jako widoczna wiadomość w TUI. Nie trzeba go "wysyłać" — model dostaje go automatycznie przy pierwszym zapytaniu. Zobacz przez `/memory show` (sekcja `INJECTED CONTEXT (last session)`).
+> **Niewidoczne w oknie czatu:** kontekst startowy trafia do system prompta modela, a nie jako widoczna wiadomość w TUI. Nie trzeba go "wysyłać" — model dostaje go automatycznie przy pierwszym zapytaniu. Zobacz przez `/codemem show` (sekcja `INJECTED CONTEXT (last session)`).
 
 ### 2. Handoff sesji (`session.idle` / `session.compacted`)
 
@@ -1122,10 +1122,10 @@ Plugin zawiera trzy rozszerzenia wykraczające poza podstawowe MVP, skoncentrowa
 
 - LRU eviction: po przekroczeniu `maxDedupCacheEntries` (domyślnie 500) usuwane są najstarsze wpisy (wg `deliveredAt`)
 - Edycja pliku (`file.edited`) unieważnia wpis cache dla tego pliku i natychmiast zapisuje zaktualizowany cache
-- `/memory clear-session` czyści cache; `project-facts.md` i zagregowany trace pozostają
+- `/codemem clear-session` czyści cache; `project-facts.md` i zagregowany trace pozostają
 - Wyłączalne przez `persistentDedupCache: false` (wtedy cache tylko w RAM, jak w podstawowym MVP)
 
-### 2. Auto-ekstrakcja faktów projektu (`/memory propose` + `/memory commit` + `project-facts.auto.md`)
+### 2. Auto-ekstrakcja faktów projektu (`/codemem propose` + `/codemem commit` + `project-facts.auto.md`)
 
 Plugin automatycznie zbiera statystyki w trakcie sesji i po jej zakończeniu (`session.idle`/`session.compacted`) agreguje je w `.opencode/memory/cache/session-trace.json` (utrwalane między sesjami):
 
@@ -1133,7 +1133,7 @@ Plugin automatycznie zbiera statystyki w trakcie sesji i po jej zakończeniu (`s
 - `editedFiles` — licznik edycji plików (z `file.edited`, ścieżki względne worktree)
 - `blockers` — powtarzające się nazwy failed testów/błędów między sesjami
 
-Komenda `/memory propose` generuje propozycje sekcji `# Komendy`, `# Hotspoty`, `# Ostatnie nieudane testy`, `# Ryzyka / powtarzające się blokery` i zapisuje je w `proposed-facts.md`. Komenda `/memory commit` dopisuje propozycje do `project-facts.md` pod markerem HTML. Te statystyki wymagają zatwierdzenia — użytkownik kontroluje rozrost `project-facts.md`.
+Komenda `/codemem propose` generuje propozycje sekcji `# Komendy`, `# Hotspoty`, `# Ostatnie nieudane testy`, `# Ryzyka / powtarzające się blokery` i zapisuje je w `proposed-facts.md`. Komenda `/codemem commit` dopisuje propozycje do `project-facts.md` pod markerem HTML. Te statystyki wymagają zatwierdzenia — użytkownik kontroluje rozrost `project-facts.md`.
 
 **Deterministyczne auto-fakty (`project-facts.auto.md`)** — obok statystyk sesji, plugin czyta repozytorium i buduje osobny plik `project-facts.auto.md`, regenerowany automatycznie na `session.idle`/`session.compacted` (konfigurowalne przez `autoExtractOnEvents`). Wstrzykiwany razem z `project-facts.md` w ramach budżetu `maxProjectMemoryTokens`. Ekstraktory wykrywają:
 
@@ -1142,7 +1142,7 @@ Komenda `/memory propose` generuje propozycje sekcji `# Komendy`, `# Hotspoty`, 
 - **Środowisko** — `.nvmrc`, `.node-version`, `.python-version`, `.ruby-version`, `.tool-versions`, `mise.toml`, `Dockerfile` (FROM), **Host OS** (`process.platform`), **WSL detection** (Linux: `/proc/sys/fs/binfmt_misc/WSLInterop`; Windows: presence `*.sh` + `*.ps1` obok siebie → "cross-platform shell", sam `*.sh` → "WSL/bash wymagany")
 - **Platforma docelowa** (nowe) — GitHub Actions `matrix.os`/`runs-on`, Electron (`electron-builder.*`), Tauri (`tauri.conf.json`), Capacitor (`capacitor.config.*`), Expo (`app.json` expo), `package.json` `os`/`cpu`/`main`, `tsconfig.json` `lib` (DOM/Node/hybrid)
 
-Plik `.auto.md` jest dodawany do `.gitignore` (regenerowany, nie wersjonowany). `project-facts.md` pozostaje dla faktów ręcznych (ryzyka, konwencje zespołu, lekcje) i jest wersjonowany. Wstrzykiwany kontekst to połączenie obu, ucięte do budżetu. Komendy `/memory auto` i `/memory auto-refresh` pozwalają podejrzeć i ręcznie odświeżyć auto-fakty. Konfiguracja: `autoExtractFacts: false` wyłącza funkcję; `autoExtractOnEvents: []` wyłącza auto-regenerację, zostawiając tylko `/memory auto-refresh`.
+Plik `.auto.md` jest dodawany do `.gitignore` (regenerowany, nie wersjonowany). `project-facts.md` pozostaje dla faktów ręcznych (ryzyka, konwencje zespołu, lekcje) i jest wersjonowany. Wstrzykiwany kontekst to połączenie obu, ucięte do budżetu. Komendy `/codemem auto` i `/codemem auto-refresh` pozwalają podejrzeć i ręcznie odświeżyć auto-fakty. Konfiguracja: `autoExtractFacts: false` wyłącza funkcję; `autoExtractOnEvents: []` wyłącza auto-regenerację, zostawiając tylko `/codemem auto-refresh`.
 
 Gdy włączony jest moduł `ai`, na `session.idle` plugin woła tani model i buduje dodatkowy plik `.opencode/memory/project-facts.ai.md` z konwencjami i ryzykami ekstrahowanymi z `README.md`/`CLAUDE.md`/`AGENTS.md`/`CONTRIBUTING.md`. Plik jest regenerowany (gitignored) i wstrzykiwany razem z auto-faktami w ramach budżetu `maxProjectMemoryTokens`. Brak AI = brak pliku (fallback deterministyczny).
 
@@ -1161,7 +1161,7 @@ Przy każdym uruchomieniu komendy build/test (wykrytej w `tool.execute.after`) p
 }
 ```
 
-Parser rozpoznaje formaty: pytest (`FAILED ...`), jest/vitest (`FAIL ...`), cargo (`failures:`), z fallbackiem na linie `FAIL`/`: error:`. Historia jest ograniczona do `maxTestHistoryEntries` (domyślnie 50). Komenda `/memory test-history` pokazuje najnowsze wpisy — pozwala śledzić, kiedy test zaczął padać lub kiedy build się zepsuł, bez ponownego analizowania logów. Krytyczne dla debugowania flaky testów w długich sesjach embedded/CI.
+Parser rozpoznaje formaty: pytest (`FAILED ...`), jest/vitest (`FAIL ...`), cargo (`failures:`), z fallbackiem na linie `FAIL`/`: error:`. Historia jest ograniczona do `maxTestHistoryEntries` (domyślnie 50). Komenda `/codemem test-history` pokazuje najnowsze wpisy — pozwala śledzić, kiedy test zaczął padać lub kiedy build się zepsuł, bez ponownego analizowania logów. Krytyczne dla debugowania flaky testów w długich sesjach embedded/CI.
 
 ### Nowe pliki danych
 
@@ -1195,12 +1195,12 @@ Plugin śledzi rozmiar kontekstu sesji na podstawie `AssistantMessage.tokens.inp
 - **Tryby** (`compactMode`):
   - `auto` — plugin nie interweniuje; OpenCode kompaktuje przy `compaction.auto: true`
   - `suggest` (domyślny) — toast + status w TUI gdy próg przekroczony; kompaktacja ręczna
-  - `confirm` — toast + `/memory compact-now` do potwierdzenia; `/memory compact-reset` do odłożenia
+  - `confirm` — toast + `/codemem compact-now` do potwierdzenia; `/codemem compact-reset` do odłożenia
   - `off` — detekcja wyłączona
 - **Wzbogacanie kontekstu po kompaktacji**: hook `experimental.session.compacting` wstrzykuje `project-facts` (auto + ręczne) i handoff sesji do kontekstu kompaktacji, żeby agent nie stracił istotnego kontekstu projektu.
 - **Reset po kompaktacji**: hook `experimental.compaction.autocontinue` resetuje `lastContextTokens` i flagę sugestii.
 
-Komendy: `/memory compact-status`, `/memory compact-now`, `/memory compact-reset`. Stan pokazywany też w `/memory status` i `/context budget`.
+Komendy: `/codemem compact-status`, `/codemem compact-now`, `/codemem compact-reset`. Stan pokazywany też w `/codemem status` i `/context budget`.
 
 ### 6. Audyt regresji wielomodelowy — IJFW cross_audit (Trident)
 
@@ -1321,25 +1321,25 @@ Zwraca: `{ verdict, iterations, findings, divergence?, stalled? }`. `verdict` �
 
 ---
 
-### 7. Lekcje projektu (`/memory lesson`)
+### 7. Lekcje projektu (`/codemem lesson`)
 
-Wersjonowany `project-facts.md` ma teraz dedykowaną sekcję `## Lekcje` — miejsce na trudne problemy rozwiązane po wielu iteracjach, nietrywialne decyzje i pułapki, na które agent może natrafić ponownie. Komenda `/memory lesson <text>` dopisuje wpis z datą ISO (automatycznie tworzy sekcję, jeśli nie istnieje). Lekcje są wstrzykiwane agentowi na starcie każdej sesji razem z auto-faktami, w ramach budżetu `maxProjectMemoryTokens`.
+Wersjonowany `project-facts.md` ma teraz dedykowaną sekcję `## Lekcje` — miejsce na trudne problemy rozwiązane po wielu iteracjach, nietrywialne decyzje i pułapki, na które agent może natrafić ponownie. Komenda `/codemem lesson <text>` dopisuje wpis z datą ISO (automatycznie tworzy sekcję, jeśli nie istnieje). Lekcje są wstrzykiwane agentowi na starcie każdej sesji razem z auto-faktami, w ramach budżetu `maxProjectMemoryTokens`.
 
-Szczegóły w rozdziale [Dostępne komendy → `/memory lesson`](#memory-lesson-opis).
+Szczegóły w rozdziale [Dostępne komendy → `/codemem lesson`](#codemem-lesson-opis).
 
 ### 8. Heurystyka trudnych problemów
 
-Komenda `/memory propose` automatycznie wykrywa **trudne problemy** — sytuacje, w których dana komenda build/test była uruchamiana ≥3 razy, z czego przynajmniej raz nieudanie (exit≠0) i ostatnie uruchomienie udane (exit=0). Taki wzorzec oznacza, że problem rozwiązano po iteracjach i jest warte zapisania lekcji, by przyszłe sesje nie musiały odkrywać tego od zera.
+Komenda `/codemem propose` automatycznie wykrywa **trudne problemy** — sytuacje, w których dana komenda build/test była uruchamiana ≥3 razy, z czego przynajmniej raz nieudanie (exit≠0) i ostatnie uruchomienie udane (exit=0). Taki wzorzec oznacza, że problem rozwiązano po iteracjach i jest warte zapisania lekcji, by przyszłe sesje nie musiały odkrywać tego od zera.
 
 Generowana sekcja `## Trudne problemy (heurystyka: ≥3 iteracje → sukces)`:
 
 ```
 - pytest -q tests/test_retry.py: rozwiązano po 4 iteracjach [2026-08-04..2026-08-04] (failed: tests/test_retry.py::test_retry_delay, test_retry_backoff)
 - npm run build: rozwiązano po 3 iteracjach [2026-08-04]
-> Jeśli któryś z tych problemów był nieoczywisty, rozważ: /memory lesson <krótki opis problem+rozwiązanie+why>
+> Jeśli któryś z tych problemów był nieoczywisty, rozważ: /codemem lesson <krótki opis problem+rozwiązanie+why>
 ```
 
-Heurystyka czyta `test-history.json` (zlicza uruchomienia per command, sprawdza exitCode). Jest deterministyczna — nie wymaga LLM. Propozycje zatwierdzane przez `/memory commit` lub ręcznie skopiowane do lekcji.
+Heurystyka czyta `test-history.json` (zlicza uruchomienia per command, sprawdza exitCode). Jest deterministyczna — nie wymaga LLM. Propozycje zatwierdzane przez `/codemem commit` lub ręcznie skopiowane do lekcji.
 
 ### 9. Ekstraktory platformy docelowej
 
@@ -1373,7 +1373,7 @@ Plugin może wołać tani model AI **niezależny od modelu kodującego**, konfig
 | ------- | -------------------------- | ---- |
 | **Handoff sesji** (`session.idle`) | `currentStatus` puste lub wpisane ręcznie | Krótkie podsumowanie 1-2 zdania co zrobiono i na czym stiano |
 | **Fakty projektu** (`project-facts.ai.md`) | Tylko auto-fakty z manifestów (build/test/arch) | Dodatkowo konwencje i ryzyka ekstrahowane z `README.md`/`CLAUDE.md`/`AGENTS.md`/`CONTRIBUTING.md` |
-| **Triage testów** (`/memory ai triage`) | Lista nieudanych testów z `/memory test-history` | Proponowany root cause (max 5 krótkich punktów) |
+| **Triage testów** (`/codemem ai triage`) | Lista nieudanych testów z `/codemem test-history` | Proponowany root cause (max 5 krótkich punktów) |
 
 **Konfiguracja:** pełny opis pól, przykłady per-provider (`openai-compatible` / `ollama` / `anthropic`), ostrzeżenie o płytkim merge'u, sposób wklejenia `ai` do `opencode.json` oraz **tryb SDK** (wybór darmowego modelu chmurowego z `/models` bez własnego `apiKey`) — w sekcji [Konfiguracja → AI module (`ai`)](#ai-module-ai).
 
@@ -1381,15 +1381,15 @@ Plugin może wołać tani model AI **niezależny od modelu kodującego**, konfig
 
 - `.opencode/memory/project-facts.ai.md` — AI-ekstrahowane fakty z dokumentacji (regenerowane na `session.idle`, gitignored)
 - `.opencode/memory/plugin-ai.log` — log błędów AI (gitignored, rotacja 1 MB → 200 linii)
-- `.opencode/memory/cache/ai-selected-model.json` — wybrany model SDK (przez `/memory ai model`)
+- `.opencode/memory/cache/ai-selected-model.json` — wybrany model SDK (przez `/codemem ai model`)
 
 **Komendy:**
 
-- `/memory ai status` — czy AI włączone, provider, model, liczniki wołań/ sukcesów/porażek, ostatni czas i błąd
-- `/memory ai models` — lista modeli z `/models` (do trybu SDK)
-- `/memory ai model <providerID/modelID>` — wybierz model chmurowy (tryb SDK)
-- `/memory ai model` — reset modelu SDK → powrót do configa `ai` (lub wyłącz)
-- `/memory ai triage` — analizuje ostatnie 3 nieudane testy i proponuje root cause (fallback: lista testów)
+- `/codemem ai status` — czy AI włączone, provider, model, liczniki wołań/ sukcesów/porażek, ostatni czas i błąd
+- `/codemem ai models` — lista modeli z `/models` (do trybu SDK)
+- `/codemem ai model <providerID/modelID>` — wybierz model chmurowy (tryb SDK)
+- `/codemem ai model` — reset modelu SDK → powrót do configa `ai` (lub wyłącz)
+- `/codemem ai triage` — analizuje ostatnie 3 nieudane testy i proponuje root cause (fallback: lista testów)
 
 **Niezawodność:**
 
@@ -1440,7 +1440,7 @@ Część dokumentacji napisana prostym językiem, jak dla kogoś, kto pierwszy r
 **Jak zweryfikować, że działa:**
 
 ```text
-/memory status
+/codemem status
 ```
 
 Powinieneś zobaczyć:
@@ -1456,7 +1456,7 @@ Na dole ekranu TUI powinien pojawić się pasek `memory: tools:N · saved:~Xk to
 **Jeśli chcesz zobaczyć dokładnie co agent dostał na starcie:**
 
 ```text
-/memory show
+/codemem show
 ```
 
 Trzy sekcje: `project-facts.md`, `active-session.json`, wstrzyknięty kontekst. Przydatne przy debugowaniu "dlaczego agent zachowuje się inaczej niż wczoraj".
@@ -1465,8 +1465,8 @@ Trzy sekcje: `project-facts.md`, `active-session.json`, wstrzyknięty kontekst. 
 
 1. `bash install.sh` — instalacja
 2. Zrestartuj OpenCode
-3. `/memory status` — weryfikacja
-4. `/memory init` — opcjonalnie, tworzy szablon `project-facts.md` z auto-wykrytymi podpowiedziami (Architektura, Komendy, Środowisko wypełnione; Konwencje/Ryzyka puste z markerem `(uzupełnij)`)
+3. `/codemem status` — weryfikacja
+4. `/codemem init` — opcjonalnie, tworzy szablon `project-facts.md` z auto-wykrytymi podpowiedziami (Architektura, Komendy, Środowisko wypełnione; Konwencje/Ryzyka puste z markerem `(uzupełnij)`)
 5. Zedytuj `project-facts.md` — uzupełnij Konwencje (styl kodu, reguły zespołu) i Ryzyka (znane problemy). Ten plik jest wersjonowany w Git.
 6. Pracuj normalnie — plugin zbiera statystyki w tle
 
@@ -1526,7 +1526,7 @@ Plugin oferuje dwie ścieżki: lokalną (`/regression`, darmowa) i wielomodelow�
 6. **Zapisz lekcję** (jeśli problem był nietrywialny):
 
    ```text
-   /memory lesson Retry backoff: nie ruszać src/radio/backoff.c przy naprawie retry.c — backoff ma własny invariant, dotknięcie go łamie test_retry_delay
+   /codemem lesson Retry backoff: nie ruszać src/radio/backoff.c przy naprawie retry.c — backoff ma własny invariant, dotknięcie go łamie test_retry_delay
    ```
 
 **Ścieżka B — wielomodelowa, przez `cross_audit` (gdy testów brak lub są flaky):**
@@ -1564,7 +1564,7 @@ Plugin oferuje dwie ścieżki: lokalną (`/regression`, darmowa) i wielomodelow�
 **Sprawdź historię testów:**
 
 ```text
-/memory test-history
+/codemem test-history
 ```
 
 Pokazuje najnowsze uruchomienia (najnowsze na górze, domyślnie 15):
@@ -1617,7 +1617,7 @@ Wykonuje `git stash` — możesz potem przywrócić przez `git stash pop`.
 
 **Ręcznie cofnąć przez git** (poza pluginem):
 
-Jeśli znasz SHA z `/memory test-history` lub `/regression last-good`, możesz użyć standardowego gita:
+Jeśli znasz SHA z `/codemem test-history` lub `/regression last-good`, możesz użyć standardowego gita:
 
 ```text
 git checkout <sha> -- <plik>      # cofnij jeden plik
@@ -1663,16 +1663,16 @@ Jeśli widzisz `memory: idle` — brak wywołań narzędzi w tej sesji (np. zara
 | Fragment | Znaczenie | Jak interpretować |
 | -------- | --------- | ----------------- |
 | `disk: X / 200.0MB (Y%)` | Rozmiar katalogu `.opencode/memory/` vs limit 200 MB | Koloryzacja: ≥90% czerwony (error), ≥70% żółty (warning), <70% szary |
-| `art X` | Rozmiar artefaktów (pełne wyniki narzędzi) | >10MB żółty — rozważ `/memory clear-session` |
-| `cache X` | Rozmiar cache (dedup, test-history, metrics) | >50MB żółty — rozważ `/memory clear-session` |
+| `art X` | Rozmiar artefaktów (pełne wyniki narzędzi) | >10MB żółty — rozważ `/codemem clear-session` |
+| `cache X` | Rozmiar cache (dedup, test-history, metrics) | >50MB żółty — rozważ `/codemem clear-session` |
 
-Jeśli `disk` ≥90% — toast error na dole ekranu: `Pamięć pluginu 180MB (90%) — /memory clear-session`. Uruchom `/memory clear-session` by wyczyścić nietrwałe dane (zachowuje `project-facts.md` i artefakty).
+Jeśli `disk` ≥90% — toast error na dole ekranu: `Pamięć pluginu 180MB (90%) — /codemem clear-session`. Uruchom `/codemem clear-session` by wyczyścić nietrwałe dane (zachowuje `project-facts.md` i artefakty).
 
 **Linia 3 — kontekst + fakty:**
 
 | Fragment | Znaczenie | Jak interpretować |
 | -------- | --------- | ----------------- |
-| `ctx: X/Y tok (Z%, compact@80%)` | Bieżący rozmiar kontekstu vs limit (autodetekcja z modelu lub 200k fallback); próg kompaktacji 80% | ≥80% — toast warning: `Kontekst 82% — /memory compact-now` |
+| `ctx: X/Y tok (Z%, compact@80%)` | Bieżący rozmiar kontekstu vs limit (autodetekcja z modelu lub 200k fallback); próg kompaktacji 80% | ≥80% — toast warning: `Kontekst 82% — /codemem compact-now` |
 | `facts: X/1.5k (Z%)` | Zużycie budżetu `maxProjectMemoryTokens` (auto + ręczne fakty) | >100% → plugin ucina kontekst + warning; rozważ skrócenie `project-facts.md` |
 | `[suggest]` | Tryb kompaktacji: `suggest`/`confirm`/`auto`/`off` | `suggest` = toast + status; `confirm` = toast + dialog; `auto` = OpenCode kompaktuje sam; `off` = wyłączone |
 
@@ -1717,7 +1717,7 @@ ai: openai-compatible/gpt-4o-mini · 3/3 ok · 1240ms
 | `ai: provider/model` | Włączony model AI (Opcja A) | Tani model, niezależny od modelu kodującego |
 | `N/M ok` | Sukcesy/wołania AI | Zielony: wszystko OK; żółty: częściowe porażki; czerwony: same porażki → fallback deterministyczny |
 | `Xms` | Czas ostatniego wołania | Diagnostyka opóźnienia |
-| `err: ...` | Ostatni błąd (gdy porażki >0) | Sprawdź `.opencode/memory/plugin-ai.log` i `/memory ai status` |
+| `err: ...` | Ostatni błąd (gdy porażki >0) | Sprawdź `.opencode/memory/plugin-ai.log` i `/codemem ai status` |
 
 **Powiadomienia TUI (toast/dialog):**
 
@@ -1725,9 +1725,9 @@ Plugin automatycznie pokazuje:
 
 | Typ | Kiedy | Co zrobić |
 | --- | ----- | --------- |
-| Toast warning | kontekst ≥ próg kompaktacji (mode=suggest) | `/memory compact-now` lub natywna komenda `/compact` |
-| Dialog confirm | kontekst ≥ próg (mode=confirm) | Potwierdź `/memory compact-now` lub odłóż `/memory compact-reset` |
-| Toast error | dysk ≥ 90% limitu 200 MB | `/memory clear-session` |
+| Toast warning | kontekst ≥ próg kompaktacji (mode=suggest) | `/codemem compact-now` lub natywna komenda `/compact` |
+| Dialog confirm | kontekst ≥ próg (mode=confirm) | Potwierdź `/codemem compact-now` lub odłóż `/codemem compact-reset` |
+| Toast error | dysk ≥ 90% limitu 200 MB | `/codemem clear-session` |
 
 Sprawdzanie co 5 s, deduplikacja (toast nie powtarza się dopóki warunek nie zniknie i nie wróci).
 
@@ -1739,9 +1739,9 @@ W trybie interaktywnym możesz przejść do pełnoekranowego dashboardu przez `a
 
 W slocie `sidebar_content` plugin dokłada blok z aktualnymi blokerami i błędami LSP (z `active-session.json`), jeśli jakieś są. Odświeżanie co 5 s. Skrócone do 60 znaków, max 3 pozycje na kategorię.
 
-**CLI fallback (`/memory tui`):**
+**CLI fallback (`/codemem tui`):**
 
-W trybie CLI (non-interactive, bez renderowania slotów) ten sam widok jest dostępny przez komendę `/memory tui` — zwraca 5-linijkowy blok z tymi samymi danymi. Przydatne w skryptach lub gdy TUI nie jest dostępne.
+W trybie CLI (non-interactive, bez renderowania slotów) ten sam widok jest dostępny przez komendę `/codemem tui` — zwraca 5-linijkowy blok z tymi samymi danymi. Przydatne w skryptach lub gdy TUI nie jest dostępne.
 
 ### Scenariusz 5: „Testy przechodzą, ale feature pada w środowisku docelowym"
 
@@ -1825,7 +1825,7 @@ Statystyki zapisywane w `.opencode/memory/cache/metrics.json`:
 1. **Filtracja wyników narzędzi** — `rawChars - deliveredChars`: skracanie długich outputów (testy, build, git diff, grep) z zachowaniem kodu wyjścia, pierwszego błędu i podsumowania; limity linii (`maxToolResultLines`, `maxDiffLines`, `maxSearchMatches`).
 2. **Deduplikacja odczytów** — `dedupSavedChars`: pełna długość odrzuconego contentu, gdy ten sam plik jest czytany ponownie w tej samej sesji (zgodność hash + zakres linii).
 
-Tokeny = `chars / 4` (standardowe przybliżenie dla kodu/tekstu angielskiego; dokładna liczba zależy od tokenizatora modelu — to szacunek ±15%). Podgląd na bieżąco przez `/memory status` (aktualizowane po każdym wywołaniu narzędzia) lub `/context budget`. Metryki resetowane przez `/memory clear-session`.
+Tokeny = `chars / 4` (standardowe przybliżenie dla kodu/tekstu angielskiego; dokładna liczba zależy od tokenizatora modelu — to szacunek ±15%). Podgląd na bieżąco przez `/codemem status` (aktualizowane po każdym wywołaniu narzędzia) lub `/context budget`. Metryki resetowane przez `/codemem clear-session`.
 
 Błędy pluginu logowane są w `.opencode/memory/plugin-errors.log`. Plugin działa w trybie **fail-open** — błąd nie zatrzymuje OpenCode.
 
@@ -1833,23 +1833,23 @@ Błędy pluginu logowane są w `.opencode/memory/plugin-errors.log`. Plugin dzia
 
 ## Rozwiązywanie problemów
 
-### Server plugin (`/memory`, `/context`, `/regression`)
+### Server plugin (`/codemem`, `/context`, `/regression`)
 
 | Objaw                                     | Rozwiązanie                                                                                  |
 | ----------------------------------------- | -------------------------------------------------------------------------------------------- |
 | Plugin się nie ładuje                    | Sprawdź ścieżkę w `opencode.json` (`plugin: ["./.opencode/plugins/project-context.ts"]`) i zrestartuj OpenCode |
-| Komendy `/memory`, `/context`, `/regression` nie działają | Upewnij się, że pliki `.md` są w `.opencode/command/` i zrestartuj OpenCode                  |
+| Komendy `/codemem`, `/context`, `/regression` nie działają | Upewnij się, że pliki `.md` są w `.opencode/command/` i zrestartuj OpenCode                  |
 | Dane mieszają się między worktree          | Każdy worktree ma własny `.opencode/memory/` — nie współdziel katalogu między worktree       |
 | Błąd w `plugin-errors.log`                | Plugin przeszedł w fail-open; sprawdź log, popraw przyczynę, usuń log                         |
 | Brak redukcji wyników                      | Sprawdź `/context budget` czy limity nie są ustawione zbyt wysoko                            |
 | `read_artifact` nie znajduje artefaktu     | Artefakt mógł zostać usunięty przez TTL/limit; uruchom ponownie narzędzie źródłowe            |
 | Sekrety nadal widoczne                     | Dodaj własny wzorzec do `SECRET_PATTERNS` w `project-context.ts` i zgłoś w logach            |
-| `/regression last-good` pokazuje „brak danych" | Uruchom testy/build, by plugin zebrał statystyki; sprawdź `/memory test-history` |
+| `/regression last-good` pokazuje „brak danych" | Uruchom testy/build, by plugin zebrał statystyki; sprawdź `/codemem test-history` |
 | `/regression suspect` nie pokazuje podejrzanych plików | Brak zmian w oknie lub brak SHA — włącz `regressionTrackHead: true` i uruchom test po commicie |
 | `/regression revert` prosi o `confirm`      | Tryb bezpieczny (`regressionSafeRevertOnly: true`); wpisz `/regression revert confirm <plik>` lub ustaw `false` |
 | Po restarcie deduplikacja nie działa        | Sprawdź `persistentDedupCache: true` i istnienie `.opencode/memory/cache/dedup-seen.json` |
-| `/memory ai status` pokazuje "wyłączone"   | Dodaj sekcję `ai` w `opencode.json` plugin options z `enabled: true` i `apiKey` (lub `provider: "ollama"`) |
-| `/memory ai triage` zwraca listę testów zamiast root cause | AI niedostępne (brak `apiKey`, błąd sieci, timeout) — fallback deterministyczny. Sprawdź `/memory ai status` i `.opencode/memory/plugin-ai.log` |
+| `/codemem ai status` pokazuje "wyłączone"   | Dodaj sekcję `ai` w `opencode.json` plugin options z `enabled: true` i `apiKey` (lub `provider: "ollama"`) |
+| `/codemem ai triage` zwraca listę testów zamiast root cause | AI niedostępne (brak `apiKey`, błąd sieci, timeout) — fallback deterministyczny. Sprawdź `/codemem ai status` i `.opencode/memory/plugin-ai.log` |
 | `project-facts.ai.md` się nie tworzy         | Włącz `ai.enabled` i upewnij się że w repo istnieje `README.md`/`CLAUDE.md`/`AGENTS.md`/`CONTRIBUTING.md` |
 
 ### TUI plugin (pasek statusu na dole ekranu)
@@ -1888,8 +1888,8 @@ Plugin jest jednym plikiem TypeScript. Wszelkie reguły (filtry, maskowanie, lim
 
 ### Reset pamięci
 
-- Tylko bieżąca sesja: `/memory clear-session`
-- Cały projekt: `/memory clear-project` (usuwa też `project-facts.md` — utwórz go ponownie po resecie)
+- Tylko bieżąca sesja: `/codemem clear-session`
+- Cały projekt: `/codemem clear-project` (usuwa też `project-facts.md` — utwórz go ponownie po resecie)
 
 ---
 

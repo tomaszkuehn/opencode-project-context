@@ -13,10 +13,10 @@ import { createHarness, type Harness } from "./harness"
 let h: Harness
 afterEach(() => { try { h?.dispose() } catch {} })
 
-describe("plugin commands — /memory", () => {
+describe("plugin commands — /codemem", () => {
   it("status: returns multi-line summary and does not throw", async () => {
     h = await createHarness()
-    const out = await h.runCommand("/memory status")
+    const out = await h.runCommand("/codemem status")
     expect(out).toMatch(/Worktree:/)
     expect(out).toMatch(/Project facts:/)
     expect(out).toMatch(/Active session:/)
@@ -26,7 +26,7 @@ describe("plugin commands — /memory", () => {
 
   it("show: prints facts + active session + injected context sections", async () => {
     h = await createHarness()
-    const out = await h.runCommand("/memory show")
+    const out = await h.runCommand("/codemem show")
     expect(out).toContain("=== PROJECT FACTS ===")
     expect(out).toContain("=== ACTIVE SESSION ===")
     expect(out).toContain("=== INJECTED CONTEXT")
@@ -36,7 +36,7 @@ describe("plugin commands — /memory", () => {
   it("save: writes handoff and refreshes updatedAt; no commit/stage", async () => {
     h = await createHarness()
     const before = h.readMemoryJson("active-session.json")
-    const out = await h.runCommand("/memory save")
+    const out = await h.runCommand("/codemem save")
     expect(out).toBe("Handoff saved.")
     const after = h.readMemoryJson("active-session.json")
     expect(after).not.toBeNull()
@@ -47,7 +47,7 @@ describe("plugin commands — /memory", () => {
 
   it("lesson <text>: appends lesson to project-facts.md (## Lekcje section)", async () => {
     h = await createHarness()
-    const out = await h.runCommand("/memory lesson Always run vitest before commit")
+    const out = await h.runCommand("/codemem lesson Always run vitest before commit")
     expect(out).toMatch(/Lekcja dopisan|lesson|saved/i)
     // NOTE: implementation writes to project-facts.md under "## Lekcje", NOT
     // to a separate lessons.md file. The command template's description says
@@ -59,7 +59,7 @@ describe("plugin commands — /memory", () => {
 
   it("test-history: reports empty when no runs", async () => {
     h = await createHarness()
-    const out = await h.runCommand("/memory test-history")
+    const out = await h.runCommand("/codemem test-history")
     expect(out).toMatch(/Brak|brak|empty/i)
   })
 
@@ -71,7 +71,7 @@ describe("plugin commands — /memory", () => {
     ]))
     // reload plugin in the SAME worktree so it reads the seeded file from disk
     h = await h.reload()
-    const out = await h.runCommand("/memory test-history")
+    const out = await h.runCommand("/codemem test-history")
     expect(out).toContain("vitest")
     expect(out).toMatch(/FAIL|OK/)
   })
@@ -79,7 +79,7 @@ describe("plugin commands — /memory", () => {
   it("init: writes project-facts.md when missing", async () => {
     h = await createHarness()
     expect(h.memoryExists("project-facts.md")).toBe(false)
-    const out = await h.runCommand("/memory init")
+    const out = await h.runCommand("/codemem init")
     expect(h.memoryExists("project-facts.md")).toBe(true)
     expect(out).toMatch(/Zapisano|NIE zapisano/)
     const facts = h.readMemoryFile("project-facts.md")
@@ -90,7 +90,7 @@ describe("plugin commands — /memory", () => {
     h = await createHarness()
     h.writeMemoryFile("project-facts.md", "# project-facts.md\n\n# Architektura\n- My real stack\n")
     const before = h.readMemoryFile("project-facts.md")
-    await h.runCommand("/memory init")
+    await h.runCommand("/codemem init")
     const after = h.readMemoryFile("project-facts.md")
     expect(after).toBe(before)
   })
@@ -98,7 +98,7 @@ describe("plugin commands — /memory", () => {
   it("init --force: overwrites existing non-trivial facts", async () => {
     h = await createHarness()
     h.writeMemoryFile("project-facts.md", "# project-facts.md\n\n# Architektura\n- old custom stack\n")
-    const out = await h.runCommand("/memory init --force")
+    const out = await h.runCommand("/codemem init --force")
     expect(out).toMatch(/Zapisano:/)
     const after = h.readMemoryFile("project-facts.md")
     expect(after).not.toContain("- old custom stack")
@@ -107,29 +107,29 @@ describe("plugin commands — /memory", () => {
 
   it("auto / auto-refresh: regenerates project-facts.auto.md", async () => {
     h = await createHarness()
-    const out = await h.runCommand("/memory auto-refresh")
+    const out = await h.runCommand("/codemem auto-refresh")
     expect(h.memoryExists("project-facts.auto.md")).toBe(true)
     expect(out).toMatch(/Zregenerowano|auto/i)
   })
 
   it("auto (show): prints auto facts", async () => {
     h = await createHarness()
-    await h.runCommand("/memory auto-refresh")
-    const out = await h.runCommand("/memory auto")
+    await h.runCommand("/codemem auto-refresh")
+    const out = await h.runCommand("/codemem auto")
     expect(out.trim().length).toBeGreaterThan(0)
   })
 
   it("propose: writes proposed-facts.md and returns it with commit hint", async () => {
     h = await createHarness()
-    const out = await h.runCommand("/memory propose")
+    const out = await h.runCommand("/codemem propose")
     expect(out).toMatch(/Proponowane fakty|propozycje|brak danych/i)
-    expect(out).toMatch(/\/memory commit/)
+    expect(out).toMatch(/\/codemem commit/)
   })
 
   it("commit: appends proposed facts to project-facts.md and clears buffer", async () => {
     h = await createHarness()
     h.writeMemoryFile("project-facts.md", "# project-facts.md\n\n# Architektura\n- existing\n")
-    await h.runCommand("/memory commit")
+    await h.runCommand("/codemem commit")
     const facts = h.readMemoryFile("project-facts.md")
     expect(facts).toContain("existing")
     expect(facts).toMatch(/propozycje pluginu|Proponowane fakty/)
@@ -141,7 +141,7 @@ describe("plugin commands — /memory", () => {
     h.writeMemoryFile("cache/dedup-seen.json", "[]")
     h.writeMemoryFile("cache/test-history.json", "[]")
     h.writeMemoryFile("cache/metrics.json", "{}")
-    const out = await h.runCommand("/memory clear-session")
+    const out = await h.runCommand("/codemem clear-session")
     expect(out).toMatch(/cleared|wyczyszczon/i)
     expect(h.readMemoryFile("project-facts.md")).toContain("keep me")
     // per-session caches removed
@@ -153,7 +153,7 @@ describe("plugin commands — /memory", () => {
   it("clear-project: wipes entire memory dir then recreates layout", async () => {
     h = await createHarness()
     h.writeMemoryFile("project-facts.md", "# bye\n")
-    const out = await h.runCommand("/memory clear-project")
+    const out = await h.runCommand("/codemem clear-project")
     expect(out).toMatch(/cleared|wyczyszczon/i)
     expect(h.readMemoryFile("project-facts.md")).toBe("")
     // layout recreated
@@ -162,7 +162,7 @@ describe("plugin commands — /memory", () => {
 
   it("compact-status: prints compaction status block", async () => {
     h = await createHarness()
-    const out = await h.runCommand("/memory compact-status")
+    const out = await h.runCommand("/codemem compact-status")
     expect(out).toContain("=== Context compaction ===")
     expect(out).toMatch(/Tryb:/)
     expect(out).toMatch(/Limit:/)
@@ -170,32 +170,32 @@ describe("plugin commands — /memory", () => {
 
   it("compact-reset: resets suggestion flag", async () => {
     h = await createHarness()
-    const out = await h.runCommand("/memory compact-reset")
+    const out = await h.runCommand("/codemem compact-reset")
     expect(out).toMatch(/reset|zresetow/i)
   })
 
   it("tui: returns memory one-line status (text equivalent of TUI)", async () => {
     h = await createHarness()
-    const out = await h.runCommand("/memory tui")
+    const out = await h.runCommand("/codemem tui")
     expect(out).toMatch(/memory:|tools:|tok/)
   })
 
   it("dashboard: returns deterministic TUI-route hint (not a render)", async () => {
     h = await createHarness()
-    const out = await h.runCommand("/memory dashboard")
+    const out = await h.runCommand("/codemem dashboard")
     expect(out).toMatch(/Dashboard TUI|route: memory-dashboard|interaktywn/i)
   })
 
   it("ai status: reports AI disabled by default", async () => {
     h = await createHarness()
-    const out = await h.runCommand("/memory ai status")
+    const out = await h.runCommand("/codemem ai status")
     expect(out).toMatch(/AI:/)
     expect(out).toMatch(/wyłączon|wylaczon|disabled/i)
   })
 
   it("ai (bare): alias of ai status", async () => {
     h = await createHarness()
-    const out = await h.runCommand("/memory ai")
+    const out = await h.runCommand("/codemem ai")
     expect(out).toMatch(/AI:/)
   })
 })
@@ -278,12 +278,12 @@ describe("plugin hooks — event lifecycle", () => {
 })
 
 describe("plugin hooks — command_result.txt contract", () => {
-  it("every /memory command writes command_result.txt with matching header", async () => {
+  it("every /codemem command writes command_result.txt with matching header", async () => {
     const cmds = [
-      "/memory status", "/memory show", "/memory save", "/memory test-history",
-      "/memory init", "/memory auto-refresh", "/memory auto", "/memory propose",
-      "/memory commit", "/memory clear-session", "/memory compact-status",
-      "/memory compact-reset", "/memory tui", "/memory dashboard", "/memory ai status",
+      "/codemem status", "/codemem show", "/codemem save", "/codemem test-history",
+      "/codemem init", "/codemem auto-refresh", "/codemem auto", "/codemem propose",
+      "/codemem commit", "/codemem clear-session", "/codemem compact-status",
+      "/codemem compact-reset", "/codemem tui", "/codemem dashboard", "/codemem ai status",
     ]
     for (const c of cmds) {
       h = await createHarness()

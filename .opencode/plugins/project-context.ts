@@ -495,7 +495,7 @@ function aiCbRecordSuccess() {
   aiCbTrippedUntil = 0
 }
 
-// Runtime override: model wybrany przez /memory ai model <providerID/modelID>.
+// Runtime override: model wybrany przez /codemem ai model <providerID/modelID>.
 // Gdy ustawiony + pluginClient dostępny, aiComplete woła client.session.prompt
 // zamiast własnego fetch — używa poświadczeń OpenCode (kluczy z /connect).
 // UWAGA: dla poleceń poza subcommand map (np. "ai model <id>") plugin woła LLM z instrukcjami,
@@ -776,7 +776,7 @@ async function aiComplete(opts: {
   // Circuit breaker: jeśli AI awariuje w pętli, przestań próbować — pozwól
   // deterministycznym fallbackom działać i nie blokuj runtime'u opencode.
   if (aiCbShouldSkip()) return null
-  // Ścieżka SDK: model wybrany przez /memory ai model + pluginClient dostępny.
+  // Ścieżka SDK: model wybrany przez /codemem ai model + pluginClient dostępny.
   if (aiSelectedSdkModel && pluginClient) {
     aiStatus.enabled = true
     aiStatus.sdkMode = true
@@ -867,7 +867,7 @@ async function aiComplete(opts: {
   return null
 }
 
-// Diagnostyka AI dla komendy /memory ai status
+// Diagnostyka AI dla komendy /codemem ai status
 function aiStatusText(): string {
   if (!aiStatus.enabled && !aiEffectiveConfig() && !aiSelectedSdkModel) {
     return [
@@ -877,9 +877,9 @@ function aiStatusText(): string {
       "Inni providerzy: \"ollama\" (lokalny, bez apiKey), \"anthropic\".",
       "",
       "Albo użyj darmowego modelu chmurowego z /models bez konfiga AI:",
-      "  /memory ai models          — lista dostępnych modeli",
-      "  /memory ai model <id>      — wybierz model (np. groq/llama-3.1-8b-instant)",
-      "  /memory ai model           — reset do configa (lub wyłącz)",
+      "  /codemem ai models          — lista dostępnych modeli",
+      "  /codemem ai model <id>      — wybierz model (np. groq/llama-3.1-8b-instant)",
+      "  /codemem ai model           — reset do configa (lub wyłącz)",
     ].join("\n")
   }
   const lines: string[] = []
@@ -950,9 +950,9 @@ async function aiListModels(): Promise<string> {
     }
     if (aiSelectedSdkModel) {
       lines.push(`Wybrany: ${aiSelectedSdkModel}`)
-      lines.push("Reset: /memory ai model")
+      lines.push("Reset: /codemem ai model")
     } else {
-      lines.push("Wybierz: /memory ai model <providerID/modelID>")
+      lines.push("Wybierz: /codemem ai model <providerID/modelID>")
     }
     return lines.join("\n")
   } catch (e: any) {
@@ -973,7 +973,7 @@ async function aiSetModel(modelArg: string): Promise<string> {
   if (!arg.includes("/")) {
     return [
       `Niepoprawny format: "${arg}". Oczekiwano providerID/modelID.`,
-      "Lista: /memory ai models",
+      "Lista: /codemem ai models",
     ].join("\n")
   }
   // Walidacja: czy model istnieje w /models (jeśli pluginClient dostępny)
@@ -986,9 +986,9 @@ async function aiSetModel(modelArg: string): Promise<string> {
       const pid = slashIdx >= 0 ? arg.slice(0, slashIdx) : arg
       const mid = slashIdx >= 0 ? arg.slice(slashIdx + 1) : ""
       const p = providers.find((x: any) => (x?.id ?? x?.providerID) === pid)
-      if (!p) return `Provider "${pid}" nie znaleziony. Lista: /memory ai models`
+      if (!p) return `Provider "${pid}" nie znaleziony. Lista: /codemem ai models`
       const models = p?.models ?? {}
-      if (!models[mid]) return `Model "${mid}" nie znaleziony u provider "${pid}". Lista: /memory ai models`
+      if (!models[mid]) return `Model "${mid}" nie znaleziony u provider "${pid}". Lista: /codemem ai models`
     } catch { /* nie krytyczne — pozwól ustawić mimo braku walidacji */ }
   }
   aiSelectedSdkModel = arg
@@ -1000,7 +1000,7 @@ async function aiSetModel(modelArg: string): Promise<string> {
   return [
     `Wybrano model SDK: ${arg}`,
     "Poświadczenia: z OpenCode /connect (brak własnego apiKey w configu).",
-    "Test: /memory ai status (po pierwszym wołaniu będą liczniki).",
+    "Test: /codemem ai status (po pierwszym wołaniu będą liczniki).",
   ].join("\n")
 }
 
@@ -1071,7 +1071,7 @@ function initMemoryLayout(worktree: string) {
   loadDedupCache()
   loadTestHistory()
   loadSessionTrace()
-  // Restore AI model override selected via /memory ai model <id>
+  // Restore AI model override selected via /codemem ai model <id>
   aiSelectedSdkModel = loadAiSelectedModel()
   if (aiSelectedSdkModel) {
     aiStatus.enabled = true
@@ -1652,7 +1652,7 @@ function buildProposedFacts(): string {
     out.push("## Trudne problemy (heurystyka: ≥3 iteracje build/test → sukces)")
     out.push(...hardProblems)
     out.push("")
-    out.push("> Jeśli któryś z tych problemów był nieoczywisty, rozważ: /memory lesson <krótki opis problem+rozwiązanie+why>")
+    out.push("> Jeśli któryś z tych problemów był nieoczywisty, rozważ: /codemem lesson <krótki opis problem+rozwiązanie+why>")
     out.push("")
   }
 
@@ -1666,19 +1666,19 @@ function commitProposedFacts(): string {
   const proposed = buildProposedFacts()
   const existing = readText(factsPath())
   const sep = existing.endsWith("\n") ? "\n" : existing ? "\n\n" : ""
-  const merged = existing + sep + "\n<!-- === propozycje pluginu (dodane /memory commit) === -->\n" + proposed
+  const merged = existing + sep + "\n<!-- === propozycje pluginu (dodane /codemem commit) === -->\n" + proposed
   writeFileSync(factsPath(), merged, "utf8")
   // clear the proposed buffer by resetting trace (keep history though)
   rmSync(proposedFactsPath(), { force: true })
   return "Propozycje dopisane do project-facts.md. Przejrzyj i edytuj ręcznie, aby zachować zwięzłość."
 }
 
-// --- /memory lesson: ręczne dopisywanie lekcji (trudne problemy, decisions) ---
+// --- /codemem lesson: ręczne dopisywanie lekcji (trudne problemy, decisions) ---
 // Lekcje lądują w wersjonowanym project-facts.md w sekcji "## Lekcje".
 // Krótkie, z datą — dla przyszłych sesji, które natrafiają na podobny problem.
 function memoryLesson(text: string): string {
   const t = (text || "").trim()
-  if (!t) return "Użycie: /memory lesson <opis lekcji>. Krótko: problem + rozwiązanie + dlaczego."
+  if (!t) return "Użycie: /codemem lesson <opis lekcji>. Krótko: problem + rozwiązanie + dlaczego."
   if (t.length > 600) return "Lekcja za długa (>600 znaków). Skróć do istotnego problem+rozwiązanie+why."
   const existing = readText(factsPath())
   const ts = new Date().toISOString().slice(0, 10)
@@ -2881,7 +2881,7 @@ function contextArtifacts(): string {
 function memoryPropose(): string {
   const proposed = buildProposedFacts()
   writeFileSync(proposedFactsPath(), proposed, "utf8")
-  return proposed + "\n\n---\nAby dopisać te propozycje do project-facts.md, uruchom:  /memory commit"
+  return proposed + "\n\n---\nAby dopisać te propozycje do project-facts.md, uruchom:  /codemem commit"
 }
 
 function memoryAutoRefresh(): string {
@@ -2932,8 +2932,8 @@ function compactStatusText(): string {
   if (lastContextTokens >= threshold) {
     lines.push("")
     lines.push("⚠ Próg przekroczony — sugerowana kompaktacja.")
-    if (cfg.compactMode === "suggest") lines.push("Aby skompaktować: użyj natywnej komendy OpenCode (np. /compact w TUI) lub /memory compact-now.")
-    else if (cfg.compactMode === "confirm") lines.push("Aby skompaktować: /memory compact-now. Aby odłożyć: /memory compact-reset.")
+    if (cfg.compactMode === "suggest") lines.push("Aby skompaktować: użyj natywnej komendy OpenCode (np. /compact w TUI) lub /codemem compact-now.")
+    else if (cfg.compactMode === "confirm") lines.push("Aby skompaktować: /codemem compact-now. Aby odłożyć: /codemem compact-reset.")
     else if (cfg.compactMode === "auto") lines.push("Tryb auto: OpenCode skompaktuje automatycznie (compaction.auto=true).")
     else if (cfg.compactMode === "off") lines.push("Tryb off: kompaktacja wyłączona w pluginie.")
   }
@@ -3003,7 +3003,7 @@ function memoryCompactStatus(): string {
 
 function memoryCompactReset(): string {
   compactSuggestionShown = false
-  return "Flaga sugestii kompaktacji zresetowana. /memory compact-status pokaże bieżący stan."
+  return "Flaga sugestii kompaktacji zresetowana. /codemem compact-status pokaże bieżący stan."
 }
 
 async function memoryCompactNow(client: any): Promise<string> {
@@ -3026,7 +3026,7 @@ async function memoryCompactNow(client: any): Promise<string> {
   ].join("\n")
 }
 
-// --- /memory init ------------------------------------------------------------
+// --- /codemem init ------------------------------------------------------------
 // Wykrywa dane z repo (ekstraktory auto-fakts) i wstępnie wypełnia project-facts.md
 // podpowiedziami. Idempotentny: nie nadpisuje nietrywialnego pliku; --force nadpisuje.
 
@@ -3043,7 +3043,7 @@ function buildInitFactsTemplate(force: boolean): { wrote: boolean; path: string;
   const arch = extractArchitecture(root)
   const out: string[] = []
   out.push("# project-facts.md")
-  out.push("# Fakty ręczne o projekcie. Inicjalizowane przez /memory init.")
+  out.push("# Fakty ręczne o projekcie. Inicjalizowane przez /codemem init.")
   out.push("# Auto-wykryte wartości to podpowiedzi — edytuj swobodnie. Regenerowane auto-fakty: project-facts.auto.md")
   out.push("")
 
@@ -3114,7 +3114,7 @@ function buildInitFactsTemplate(force: boolean): { wrote: boolean; path: string;
 
   // Idempotencja: nie nadpisuj, chyba że force lub domyślny szablon
   if (existing && !force && !isDefaultFactsTemplate(existing)) {
-    return { wrote: false, path, body, skipped: "istniejący project-facts.md nietrywialny — użyj /memory init --force, aby nadpisać" }
+    return { wrote: false, path, body, skipped: "istniejący project-facts.md nietrywialny — użyj /codemem init --force, aby nadpisać" }
   }
   if (existing && !force && isDefaultFactsTemplate(existing)) {
     // backup domyślnego szablonu
@@ -3135,10 +3135,10 @@ function memoryInit(args: string): string {
     lines.push("---")
     lines.push("Wykryte podpowiedzi wstawione do sekcji: Architektura, Komendy, Środowisko.")
     lines.push("Sekcje Konwencje i Ryzyka pozostawiono puste — uzupełnij ręcznie.")
-    lines.push("Auto-fakty (.auto.md) są regenerowane oddzielnie na session.idle lub /memory auto-refresh.")
+    lines.push("Auto-fakty (.auto.md) są regenerowane oddzielnie na session.idle lub /codemem auto-refresh.")
   } else {
     lines.push(`NIE zapisano: ${res.skipped}`)
-    lines.push("Aby zobaczyć proponowany szablon bez zapisu, edytuj ręcznie lub użyj /memory init --force.")
+    lines.push("Aby zobaczyć proponowany szablon bez zapisu, edytuj ręcznie lub użyj /codemem init --force.")
   }
   return lines.join("\n")
 }
@@ -3266,13 +3266,13 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
           }
         } else if (type === "command.executed") {
           const cmd: string = event?.properties?.command ?? ""
-          if (cmd.startsWith("/memory ") || cmd.startsWith("/context ")) {
+          if (cmd.startsWith("/codemem ") || cmd.startsWith("/context ")) {
             // handled below via tui.command.execute; nothing here
           }
-          // CLI fallback: /memory tui działa też w trybie non-interactive
-          if (cmd.startsWith("/memory tui")) {
+          // CLI fallback: /codemem tui działa też w trybie non-interactive
+          if (cmd.startsWith("/codemem tui")) {
             const out: { result?: string } = {}
-            await failOpenAsync(async () => { out.result = memoryTuiDump() }, "command.executed /memory tui")
+            await failOpenAsync(async () => { out.result = memoryTuiDump() }, "command.executed /codemem tui")
             if (out.result) console.log(out.result)
           }
         } else if (type === "message.updated") {
@@ -3334,7 +3334,7 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
         if (t === "read") {
           const fp: string = output?.args?.filePath ?? ""
           if (isSensitivePath(fp)) {
-            throw new Error(`Blocked read of sensitive file: ${fp}. Use /memory to allow explicitly.`)
+            throw new Error(`Blocked read of sensitive file: ${fp}. Use /codemem to allow explicitly.`)
           }
         }
         // security: block bash reading secrets
@@ -3397,7 +3397,7 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
         const argPart = input?.arguments != null ? " " + String(input.arguments) : ""
         const raw = `${cmdPart}${argPart}`.trim()
         const norm = raw.trim()
-        if (!/^\/?((memory|context|regression)\b)/.test(norm)) return
+        if (!/^\/?((codemem|context|regression)\b)/.test(norm)) return
         const slash = norm.startsWith("/") ? norm : "/" + norm
         const result = await dispatchCommand(slash)
         if (result === undefined) return
@@ -3427,38 +3427,38 @@ function commandResultPath(): string {
 // Współdzielony dispatch komend memory/context/regression → deterministyczny wynik.
 // async: compact-now i ai triage wymagają await (wołają client API / aiComplete).
 async function dispatchCommand(cmd: string): Promise<string | undefined> {
-  if (cmd.startsWith("/memory status")) return memoryStatus()
-  if (cmd.startsWith("/memory show")) return memoryShow()
-  if (cmd.startsWith("/memory save")) {
+  if (cmd.startsWith("/codemem status")) return memoryStatus()
+  if (cmd.startsWith("/codemem show")) return memoryShow()
+  if (cmd.startsWith("/codemem save")) {
     const handoff = buildHandoff(lastSessionId, [])
     writeActiveSession(handoff)
     return "Handoff saved."
   }
-  if (cmd.startsWith("/memory clear-session")) return memoryClearSession()
-  if (cmd.startsWith("/memory clear-project")) return memoryClearProject()
-  if (cmd.startsWith("/memory compact-status")) return memoryCompactStatus()
-  if (cmd.startsWith("/memory compact-reset")) return memoryCompactReset()
-  if (cmd.startsWith("/memory compact-now")) return memoryCompactNow(pluginClient)
-  if (cmd.startsWith("/memory compact")) {
+  if (cmd.startsWith("/codemem clear-session")) return memoryClearSession()
+  if (cmd.startsWith("/codemem clear-project")) return memoryClearProject()
+  if (cmd.startsWith("/codemem compact-status")) return memoryCompactStatus()
+  if (cmd.startsWith("/codemem compact-reset")) return memoryCompactReset()
+  if (cmd.startsWith("/codemem compact-now")) return memoryCompactNow(pluginClient)
+  if (cmd.startsWith("/codemem compact")) {
     const handoff = buildHandoff(lastSessionId, [])
     writeActiveSession(handoff)
     return "Compact handoff created."
   }
-  if (cmd.startsWith("/memory propose")) return memoryPropose()
-  if (cmd.startsWith("/memory commit")) return commitProposedFacts()
-  if (cmd.startsWith("/memory lesson")) return memoryLesson(cmd.replace(/^\/memory lesson\s*/, ""))
-  if (cmd.startsWith("/memory auto-refresh")) return memoryAutoRefresh()
-  if (cmd.startsWith("/memory auto")) return memoryAutoShow()
-  if (cmd.startsWith("/memory init")) return memoryInit(cmd.replace(/^\/memory init\s*/, ""))
-  if (cmd.startsWith("/memory test-history")) return memoryTestHistory()
-  if (cmd.startsWith("/memory ai models")) return aiListModels()
-  if (cmd.startsWith("/memory ai model ")) return aiSetModel(cmd.replace(/^\/memory ai model\s+/, ""))
-  if (cmd === "/memory ai model") return aiSetModel("")
-  if (cmd.startsWith("/memory ai status")) return aiStatusText()
-  if (cmd.startsWith("/memory ai triage")) return aiTriageFailedTests()
-  if (cmd.startsWith("/memory ai")) return aiStatusText()
-  if (cmd.startsWith("/memory tui")) return memoryTuiDump()
-  if (cmd.startsWith("/memory dashboard")) return "Dashboard TUI: użyj w trybie interaktywnym (route: memory-dashboard)"
+  if (cmd.startsWith("/codemem propose")) return memoryPropose()
+  if (cmd.startsWith("/codemem commit")) return commitProposedFacts()
+  if (cmd.startsWith("/codemem lesson")) return memoryLesson(cmd.replace(/^\/codemem lesson\s*/, ""))
+  if (cmd.startsWith("/codemem auto-refresh")) return memoryAutoRefresh()
+  if (cmd.startsWith("/codemem auto")) return memoryAutoShow()
+  if (cmd.startsWith("/codemem init")) return memoryInit(cmd.replace(/^\/codemem init\s*/, ""))
+  if (cmd.startsWith("/codemem test-history")) return memoryTestHistory()
+  if (cmd.startsWith("/codemem ai models")) return aiListModels()
+  if (cmd.startsWith("/codemem ai model ")) return aiSetModel(cmd.replace(/^\/codemem ai model\s+/, ""))
+  if (cmd === "/codemem ai model") return aiSetModel("")
+  if (cmd.startsWith("/codemem ai status")) return aiStatusText()
+  if (cmd.startsWith("/codemem ai triage")) return aiTriageFailedTests()
+  if (cmd.startsWith("/codemem ai")) return aiStatusText()
+  if (cmd.startsWith("/codemem tui")) return memoryTuiDump()
+  if (cmd.startsWith("/codemem dashboard")) return "Dashboard TUI: użyj w trybie interaktywnym (route: memory-dashboard)"
   if (cmd.startsWith("/context budget")) return contextBudget()
   if (cmd.startsWith("/context artifacts")) return contextArtifacts()
   if (cmd.startsWith("/regression last-good")) return regressionLastGood()
