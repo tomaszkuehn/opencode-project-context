@@ -199,32 +199,6 @@ describe("plugin commands — /codemem", () => {
     expect(out).toMatch(/AI:/)
   })
 
-  it("ai models: without pluginClient.config.providers returns unavailable message", async () => {
-    h = await createHarness()
-    const out = await h.runCommand("/codemem ai models")
-    expect(out).toMatch(/client\.config\.providers niedostępne|niedost/i)
-  })
-
-  it("ai model <id>: rejects invalid format (no slash)", async () => {
-    h = await createHarness()
-    const out = await h.runCommand("/codemem ai model invalidnoslash")
-    expect(out).toMatch(/Niepoprawny format|niepoprawny/i)
-    expect(out).toMatch(/\/codemem ai models/)
-  })
-
-  it("ai model <id>: accepts providerID/modelID and reports SDK mode", async () => {
-    h = await createHarness()
-    const out = await h.runCommand("/codemem ai model openrouter/nvidia/nemotron-3-nano-30b-a3b:free")
-    expect(out).toMatch(/Wybrano model SDK:/)
-    expect(out).toContain("openrouter/nvidia/nemotron-3-nano-30b-a3b:free")
-  })
-
-  it("ai model (bare): reports not-set when no override active", async () => {
-    h = await createHarness()
-    const out = await h.runCommand("/codemem ai model")
-    expect(out).toMatch(/nie był ustawiony|nie byl|Brak zmian/i)
-  })
-
   it("ai triage: no failed tests in history → returns no-data message", async () => {
     h = await createHarness()
     const out = await h.runCommand("/codemem ai triage")
@@ -449,7 +423,7 @@ describe("plugin hooks — command_result.txt contract", () => {
       "/codemem commit", "/codemem clear-session", "/codemem compact-status",
       "/codemem compact-reset", "/codemem compact-now", "/codemem compact",
       "/codemem tui", "/codemem dashboard",
-      "/codemem ai status", "/codemem ai models", "/codemem ai model", "/codemem ai triage",
+      "/codemem ai status", "/codemem ai triage",
       "/regression feature add x", "/regression feature list", "/regression feature check x",
     ]
     for (const c of cmds) {

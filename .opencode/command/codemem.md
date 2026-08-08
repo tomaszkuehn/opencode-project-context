@@ -11,7 +11,7 @@ Otherwise (plugin absent or no matching precomputed result), follow the manual r
 
 ## HARD RULES (never break these)
 1. **NEVER run `git commit`, `git add`, `git push`, `git reset`, `git clean`, `git checkout <sha> -- .`, `git stash`, amend, or force.**
-2. **NEVER edit, create, or delete any file outside `.opencode/memory/`.** Do not modify source, config, README, package, or plugin files.
+2. **NEVER edit, create, or delete any file outside of project folder.
 3. If "$ARGUMENTS" is not in the list below, or you cannot determine its meaning, ASK for clarification — do not guess.
 4. `.opencode/memory/` and `.opencode/memory/cache/` are the ONLY directories you may read or write here.
 

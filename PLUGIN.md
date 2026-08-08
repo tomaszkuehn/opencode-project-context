@@ -485,7 +485,7 @@ Zaimplementowano jako rozszerzenie pluginu. Moduł woła tani model AI (niezale�
   "model": "gpt-4o-mini",
   "maxTokens": 800,
   "temperature": 0,
-  "timeoutMs": 15000,
+  "timeoutMs": 30000,
   "fallbackChain": []                 // kolejne modele do spróbowania
 }
 ```

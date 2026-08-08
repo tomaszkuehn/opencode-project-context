@@ -398,7 +398,7 @@ Sekcja `ai` jest **zagnieżdżonym obiektem** wewnątrz opcji pluginu — czyli 
         "model": "gpt-4o-mini",
         "maxTokens": 800,
         "temperature": 0,
-        "timeoutMs": 15000,
+        "timeoutMs": 30000,
         "fallbackChain": ["gpt-4o-mini", "gpt-3.5-turbo"]
       }
     }]
@@ -417,7 +417,7 @@ Sekcja `ai` jest **zagnieżdżonym obiektem** wewnątrz opcji pluginu — czyli 
 | `model`        | `"gpt-4o-mini"`       | Nazwa modelu (np. `gpt-4o-mini`, `qwen2.5:7b`, `claude-3-5-haiku-20241022`) |
 | `maxTokens`    | `800`                 | Limit tokenów odpowiedzi |
 | `temperature`  | `0`                   | Temperatura (0 = deterministyczne) |
-| `timeoutMs`    | `15000`               | Timeout żądania (AbortController) |
+| `timeoutMs`    | `30000`               | Timeout żądania (AbortController) |
 | `fallbackChain`| `[]`                  | Lista kolejnych modeli do spróbowania przy błędzie pierwszego |
 
 #### Przykłady per provider
@@ -432,7 +432,7 @@ Sekcja `ai` jest **zagnieżdżonym obiektem** wewnątrz opcji pluginu — czyli 
   "model": "gpt-4o-mini",
   "maxTokens": 800,
   "temperature": 0,
-  "timeoutMs": 15000,
+  "timeoutMs": 30000,
   "fallbackChain": []
 }
 ```
@@ -488,53 +488,6 @@ Po edycji sprawdź poprawność JSON:
 node -e "JSON.parse(require('fs').readFileSync('opencode.json','utf8')); console.log('OK')"
 ```
 
-#### Tryb SDK: darmowy model chmurowy z `/models` (bez własnego `apiKey`)
-
-Alternatywa dla konfiguracji `ai` w `opencode.json` — wybór modelu przez **selektor `/models`** OpenCode, z poświadczeniami z `/connect` (brak własnego `apiKey`/`baseUrl` w configu pluginu). Idealne dla darmowych modeli chmurowych (Groq, OpenRouter `:free`).
-
-Plugin woła `client.session.prompt()` z wybranym modelem, korzystając z kluczy dodanych w OpenCode przez `/connect`. Działa bez sekcji `ai` w `opencode.json` — wystarczy dodać providera w OpenCode i wybrać model.
-
-**Komendy:**
-
-```text
-/codemem ai models              # lista dostępnych modeli (to samo źródło co /models)
-/codemem ai model <providerID/modelID>   # wybierz model do zadań pluginu
-/codemem ai model               # reset → powrót do configa ai (lub wyłącz)
-/codemem ai status              # diagnostyka: wybrany model + liczniki
-```
-
-**Przykład — Groq (darmowy tier):**
-
-1. W OpenCode: `/connect` → dodaj providera `groq` z kluczem z [console.groq.com](https://console.groq.com)
-2. W TUI:
-```text
-/codemem ai models
-# wyświetli listę, m.in.:
-#   groq/llama-3.1-8b-instant
-#   groq/llama-3.3-70b-versatile
-
-/codemem ai model groq/llama-3.1-8b-instant
-# → "Wybrano model SDK: groq/llama-3.1-8b-instant"
-
-/codemem ai status
-# → AI: włączone (SDK mode)
-#   Model SDK: groq/llama-3.1-8b-instant
-#   Poświadczenia: z OpenCode /connect
-```
-
-Po wyborze modelu plugin używa go do handoffu sesji, ekstrakcji faktów i triage testów (`/codemem ai triage`). Gdy model SDK ustawiony, sekcja `ai` w `opencode.json` jest ignorowana. Reset przez `/codemem ai model` (bez argumentu) przywraca config lub wyłącza AI.
-
-**Różnica vs. sekcja `ai` w configu:**
-
-| Aspekt | `ai` w `opencode.json` | Tryb SDK (`/codemem ai model`) |
-| --- | --- | --- |
-| Poświadczenia | własny `apiKey` w configu | z `/connect` (OpenCode zarządza) |
-| `baseUrl` | wymagany (lub domyślny per provider) | nie potrzebny (SDK wie) |
-| Wybór modelu | statyczny w configu | runtime, przez komendę |
-| Lista modeli | ręczna | z `/codemem ai models` (= `/models`) |
-| Koszt | zależy od providera | darmowe dla Groq/OpenRouter `:free` |
-| Fallback | `fallbackChain` w configu | `null` → deterministyczna ścieżka |
-
 #### Fallback (warstwowo)
 
 Przy braku `enabled`/`apiKey` → moduł wyłączony, plugin działa deterministycznie (status quo). Przy błędzie sieci/HTTP/timeout → retry 1× + próba kolejnych modeli z `fallbackChain`. Przy złej odpowiedzi JSON → retry 1× z `temperature: 0`. W każdym przypadku `aiComplete()` zwraca `null` — wywołujący używa ścieżki deterministycznej. AI nigdy nie w ścieżce krytycznej.
@@ -549,7 +502,7 @@ Parametry (stałe w `project-context.ts`):
 
 #### Ochrona przed zawieszonymi promisami (`failOpenAsync`)
 
-Wszystkie asynchroniczne ścieżki pluginu (`session.idle`, `session.compacted`, `tool.execute.after`) są owinięte w `failOpenAsync`, która **wyściga** oryginalną promisę z timeoutem 5 s (`FAIL_OPEN_ASYNC_TIMEOUT_MS`). Gdy task nie odpowie w tym czasie (np. `fetch` bez odpowiedzi, `session.prompt` wiszący na SDK), promisa zostaje odrzucona, błąd trafia do logu, a opencode nie czeka w nieskończoność — **ESC przerywa natychmiast**.
+Wszystkie asynchroniczne ścieżki pluginu (`session.idle`, `session.compacted`, `tool.execute.after`) są owinięte w `failOpenAsync`, która **wyściga** oryginalną promisę z timeoutem 35 s (`FAIL_OPEN_ASYNC_TIMEOUT_MS`). Gdy task nie odpowie w tym czasie (np. `fetch` bez odpowiedzi, `session.prompt` wiszący na SDK), promisa zostaje odrzucona, błąd trafia do logu, a opencode nie czeka w nieskończoność — **ESC przerywa natychmiast**.
 
 #### Rotacja logów
 
@@ -567,10 +520,7 @@ Moduł AI przeszedł 4 poprawki pokryte testami (`tests/ai-config.test.ts`):
 | `parseModelKey` — ucięty modelID | `"openrouter/cohere/model:free"` → `modelID="cohere"` (truncated) → OpenRouter 500 | Split tylko na pierwszym slashu (modelID może mieć slashe) |
 
 **Komendy diagnostyczne:**
-- `/codemem ai status` — czy AI włączone, jaki model (config lub SDK), liczniki wołań/ sukcesów/porażek, ostatni błąd
-- `/codemem ai models` — lista dostępnych modeli z `/models` (do trybu SDK)
-- `/codemem ai model <id>` — wybierz model chmurowy z `/models` do zadań pluginu (tryb SDK)
-- `/codemem ai model` — reset modelu SDK → powrót do configa `ai` (lub wyłącz)
+- `/codemem ai status` — czy AI włączone, jaki model (z configa), liczniki wołań/sukcesów/porażek, ostatni błąd
 - `/codemem ai triage` — analizuje ostatnie nieudane testy i proponuje root cause (fallback: lista testów)
 
 **Pliki:**
@@ -1375,26 +1325,22 @@ Plugin może wołać tani model AI **niezależny od modelu kodującego**, konfig
 | **Fakty projektu** (`project-facts.ai.md`) | Tylko auto-fakty z manifestów (build/test/arch) | Dodatkowo konwencje i ryzyka ekstrahowane z `README.md`/`CLAUDE.md`/`AGENTS.md`/`CONTRIBUTING.md` |
 | **Triage testów** (`/codemem ai triage`) | Lista nieudanych testów z `/codemem test-history` | Proponowany root cause (max 5 krótkich punktów) |
 
-**Konfiguracja:** pełny opis pól, przykłady per-provider (`openai-compatible` / `ollama` / `anthropic`), ostrzeżenie o płytkim merge'u, sposób wklejenia `ai` do `opencode.json` oraz **tryb SDK** (wybór darmowego modelu chmurowego z `/models` bez własnego `apiKey`) — w sekcji [Konfiguracja → AI module (`ai`)](#ai-module-ai).
+**Konfiguracja:** pełny opis pól, przykłady per-provider (`openai-compatible` / `ollama` / `anthropic`), ostrzeżenie o płytkim merge'u, sposób wklejenia `ai` do `opencode.json` — w sekcji [Konfiguracja → AI module (`ai`)](#ai-module-ai).
 
 **Pliki:**
 
 - `.opencode/memory/project-facts.ai.md` — AI-ekstrahowane fakty z dokumentacji (regenerowane na `session.idle`, gitignored)
 - `.opencode/memory/plugin-ai.log` — log błędów AI (gitignored, rotacja 1 MB → 200 linii)
-- `.opencode/memory/cache/ai-selected-model.json` — wybrany model SDK (przez `/codemem ai model`)
 
 **Komendy:**
 
 - `/codemem ai status` — czy AI włączone, provider, model, liczniki wołań/ sukcesów/porażek, ostatni czas i błąd
-- `/codemem ai models` — lista modeli z `/models` (do trybu SDK)
-- `/codemem ai model <providerID/modelID>` — wybierz model chmurowy (tryb SDK)
-- `/codemem ai model` — reset modelu SDK → powrót do configa `ai` (lub wyłącz)
 - `/codemem ai triage` — analizuje ostatnie 3 nieudane testy i proponuje root cause (fallback: lista testów)
 
 **Niezawodność:**
 
 - **Circuit breaker** — po 5 kolejnych awariach w oknie 60 s AI wyłączane na 60 s (cooldown), potem reset
-- **failOpenAsync timeout** — asynchroniczne hooki mają 5 s na odpowiedź; bez tego opencode czeka w nieskończoność
+- **failOpenAsync timeout** — asynchroniczne hooki mają 35 s na odpowiedź; bez tego opencode czeka w nieskończoność
 - **Rotacja logów** — `plugin-ai.log` / `plugin-errors.log` rotują przy 1 MB (ostatnie 200 linii)
 - **Fallback warstwy** — brak `enabled`/`apiKey` → wyłączone; błąd HTTP → retry 1× + `fallbackChain`; zły JSON → retry 1× z `temperature:0`; zawsze `aiComplete()` → `null` → ścieżka deterministyczna
 
@@ -1404,8 +1350,7 @@ Plugin może wołać tani model AI **niezależny od modelu kodującego**, konfig
 - `apiKey` przez interpolację `${ENV_VAR}` — nigdy nie hardkodować w `opencode.json`
 - AI czyta tylko pliki dokumentacji (`README.md`/`CLAUDE.md`/`AGENTS.md`/`CONTRIBUTING.md`), nie kod źródłowy
 - Prompt systemowy zawsze po polsku, z limitem `maxTokens` (domyślnie 800)
-- Timeout 15s domyślnie — AI nie blokuje `session.idle` na długo
-- **Tryb SDK:** poświadczenia z `/connect` (zarządza OpenCode), plugin nie dotyka kluczy
+- Timeout 30s domyślnie — AI nie blokuje `session.idle` na długo
 
 ---
 

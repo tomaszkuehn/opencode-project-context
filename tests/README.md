@@ -58,8 +58,6 @@ Wszystkie komendy udostępniane przez plugin mają dedykowane testy:
 | `tui` | ✓ |
 | `dashboard` | ✓ |
 | `ai` / `ai status` | ✓ |
-| `ai models` | ✓ (brak pluginClient) |
-| `ai model <id>` | ✓ (format, akceptacja, reset) |
 | `ai triage` | ✓ (pusty + zasiany fallback) |
 
 ### `/context` (pełne pokrycie)

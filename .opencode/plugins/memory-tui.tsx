@@ -63,6 +63,10 @@ type Metrics = {
   aiFailures?: number
   aiLastCallMs?: number
   aiLastError?: string
+  aiHealthState?: "active" | "offline" | "unknown"
+  aiBusy?: boolean
+  aiBusyLabel?: string
+  aiBusySince?: number
 }
 
 type ActiveSession = {
@@ -278,71 +282,55 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
         })()}
       </box>
 
-      {/* --- Section 2: Disk --- */}
+      {/* --- Section 2: Zasoby (dysk + cache + kontekst w jednym) --- */}
       <box flexDirection="column" marginTop={1}>
-        {sectionTitle("Dysk")}
+        {sectionTitle("Zasoby")}
         {(() => {
           const mm = m()
-          const disk = mm?.diskBytes ?? 0
-          const limit = mm?.diskLimitBytes ?? 200 * 1024 * 1024
-          const dp = pct(disk, limit)
-          const color = dp >= 90 ? t.error : dp >= 70 ? t.warning : t.text
-          return (
-            <text fg={color}>  {fmtBytes(disk)} / {fmtBytes(limit)} ({dp}%) · art {fmtBytes(mm?.artifactsBytes ?? 0)} · cache {fmtBytes(mm?.cacheBytes ?? 0)}</text>
-          )
-        })()}
-      </box>
-
-      {/* --- Section 3: Context budget --- */}
-      <box flexDirection="column" marginTop={1}>
-        {sectionTitle("Budżet kontekstu")}
-        {(() => {
-          const mm = m()
-          const ct = mm?.contextTokens ?? 0
-          const cl = mm?.contextLimit ?? 0
+          if (!mm) return <text fg={t.textMuted}>  (brak danych)</text>
+          const disk = mm.diskBytes ?? 0
+          const diskLimit = mm.diskLimitBytes ?? 200 * 1024 * 1024
+          const dp = pct(disk, diskLimit)
+          const diskColor = dp >= 90 ? t.error : dp >= 70 ? t.warning : t.text
+          const ct = mm.contextTokens ?? 0
+          const cl = mm.contextLimit ?? 0
           const cp = pct(ct, cl)
-          const thr = mm?.compactThresholdPct ?? 80
-          const ft = mm?.factsTokens ?? 0
-          const fm = mm?.factsMaxTokens ?? 1500
-          const fp = pct(ft, fm)
-          const color = cp >= thr ? t.error : cp >= thr - 15 ? t.warning : t.text
+          const thr = mm.compactThresholdPct ?? 80
+          const ctxColor = cp >= thr ? t.error : cp >= thr - 15 ? t.warning : t.text
           return (
             <box flexDirection="column">
-              <text fg={color}>  ctx: {fmtTokens(ct)}/{fmtTokens(cl)} tok ({cp}%, compact@{thr}%) [{mm?.compactMode ?? "?"}]</text>
-              <text fg={t.textMuted}>  facts: {fmtTokens(ft)}/{fmtTokens(fm)} ({fp}%)</text>
+              <text fg={diskColor}>  dysk   {fmtBytes(disk)} / {fmtBytes(diskLimit)} ({dp}%)</text>
+              <text fg={t.textMuted}>         art {fmtBytes(mm.artifactsBytes ?? 0)} · cache {fmtBytes(mm.cacheBytes ?? 0)}</text>
+              <text fg={ctxColor}>  ctx    {fmtTokens(ct)}/{fmtTokens(cl)} tok ({cp}%)  compact@{thr}% [{mm.compactMode ?? "?"}]</text>
             </box>
           )
         })()}
       </box>
 
-      {/* --- Section 4: Session --- */}
+      {/* --- Section 3: Sesja --- */}
       <box flexDirection="column" marginTop={1}>
         {sectionTitle("Sesja")}
         {(() => {
           const mm = m()
           const ss = s()
-          const handoff = ageLabel(mm?.handoffAgeMin ?? 0)
-          const dirty = mm?.dirtyFiles ?? 0
-          const dirtyLabel = dirty > 0 ? ` (dirty:${dirty})` : ""
-          const lsp = mm?.lspErrorsCount ?? 0
-          const lspLabel = lsp > 0 ? ` · lsp:${lsp}err` : ""
-          const lastGood = mm?.lastGoodHead ? ` · last-good:${mm.lastGoodHead}` : ""
+          if (!mm) return null
+          const handoff = ageLabel(mm.handoffAgeMin ?? 0)
           return (
             <box flexDirection="column">
-              <text fg={t.text}>  handoff: {handoff} · mod:{mm?.modifiedCount ?? 0} · dec:{mm?.decisionsCount ?? 0} · blk:{mm?.blockersCount ?? 0}</text>
-              <text fg={t.textMuted}>  HEAD:{mm?.headSha || "-"}{dirtyLabel}{lspLabel}{lastGood}</text>
-              {ss?.goal ? <text fg={t.text}>  goal: {ss.goal}</text> : null}
+              <text fg={t.text}>  HEAD {mm.headSha || "-"}{mm.dirtyFiles ? `  dirty:${mm.dirtyFiles}` : ""}{mm.lspErrorsCount ? `  lsp:${mm.lspErrorsCount}err` : ""}</text>
+              <text fg={t.textMuted}>  handoff {handoff}  mod {mm.modifiedCount ?? 0}  dec {mm.decisionsCount ?? 0}  blk {mm.blockersCount ?? 0}</text>
+              {ss?.goal ? <text fg={t.text}>  cel: {ss.goal}</text> : null}
               {ss?.currentStatus ? <text fg={t.textMuted}>  status: {ss.currentStatus}</text> : null}
               {ss?.blockers && ss.blockers.length > 0 ? (
-                <box flexDirection="column">
+                <box flexDirection="column" marginTop={0}>
                   <text fg={t.warning}>  blokery:</text>
-                  {ss.blockers.map((b, i) => <text fg={t.warning}>    - {b}</text>)}
+                  {ss.blockers.map((b) => <text fg={t.warning}>    - {b}</text>)}
                 </box>
               ) : null}
               {ss?.lspErrors && ss.lspErrors.length > 0 ? (
-                <box flexDirection="column">
+                <box flexDirection="column" marginTop={0}>
                   <text fg={t.error}>  błędy LSP:</text>
-                  {ss.lspErrors.slice(0, 5).map((e, i) => <text fg={t.error}>    - {e}</text>)}
+                  {ss.lspErrors.slice(0, 5).map((e) => <text fg={t.error}>    - {e}</text>)}
                 </box>
               ) : null}
             </box>
@@ -350,41 +338,53 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
         })()}
       </box>
 
-      {/* --- Section 5: Cache limits --- */}
-      <box flexDirection="column" marginTop={1}>
-        {sectionTitle("Cache")}
-        {(() => {
-          const mm = m()
-          return (
-            <text fg={t.text}>  dedup: {mm?.dedupCacheCount ?? 0}/{mm?.dedupCacheMax ?? 500} · tests: {mm?.testHistoryCount ?? 0}/{mm?.testHistoryMax ?? 50}</text>
-          )
-        })()}
-      </box>
+      {/* --- Section 4: Cache (tylko przy zbliżaniu się do limitu) --- */}
+      {(() => {
+        const mm = m()
+        const dedupC = mm?.dedupCacheCount ?? 0
+        const dedupM = mm?.dedupCacheMax ?? 500
+        const testC = mm?.testHistoryCount ?? 0
+        const testM = mm?.testHistoryMax ?? 50
+        if (dedupC < dedupM * 0.8 && testC < testM * 0.8) return null
+        return (
+          <box flexDirection="column" marginTop={1}>
+            {sectionTitle("Cache (zbliża się limit)")}
+            <text fg={t.text}>  dedup {dedupC}/{dedupM} · tests {testC}/{testM}</text>
+          </box>
+        )
+      })()}
 
-      {/* --- Section 5b: AI module --- */}
-      <box flexDirection="column" marginTop={1}>
-        {sectionTitle("AI module (Opcja A)")}
-        {(() => {
-          const mm = m()
-          const on = mm?.aiEnabled === true
-          if (!on) return <text fg={t.textMuted}>  wyłączone (deterministyczne ekstraktory działają)</text>
-          const prov = mm?.aiProvider ?? "?"
-          const model = mm?.aiModel ?? "?"
-          const calls = mm?.aiCalls ?? 0
-          const ok = mm?.aiSuccesses ?? 0
-          const fail = mm?.aiFailures ?? 0
-          const ms = mm?.aiLastCallMs ?? 0
-          const err = mm?.aiLastError ?? ""
-          const statusColor = fail > 0 && ok === 0 ? t.error : fail > 0 ? t.warning : t.success
-          return (
-            <box flexDirection="column">
-              <text fg={t.text}>  model: <text fg={t.accent}>{prov}/{model}</text></text>
-              <text fg={t.text}>  wołania: <text fg={statusColor}>{ok}/{calls} ok</text>{fail > 0 ? <text fg={t.warning}> ({fail} porażek)</text> : null}{ms > 0 ? <text fg={t.textMuted}> · {ms}ms</text> : null}</text>
-              {err && fail > 0 ? <text fg={t.error}>  błąd: {err.slice(0, 100)}</text> : null}
-            </box>
-          )
-        })()}
-      </box>
+      {/* --- Section 5: AI (tylko gdy włączone) --- */}
+      {(() => {
+        const mm = m()
+        const on = mm?.aiEnabled === true
+        if (!on) return null
+        const prov = mm?.aiProvider ?? "?"
+        const model = mm?.aiModel ?? "?"
+        const calls = mm?.aiCalls ?? 0
+        const ok = mm?.aiSuccesses ?? 0
+        const fail = mm?.aiFailures ?? 0
+        const err = mm?.aiLastError ?? ""
+        const health = mm?.aiHealthState ?? "unknown"
+        const busy = mm?.aiBusy === true
+        const busyLabel = mm?.aiBusyLabel ?? ""
+        const busySince = mm?.aiBusySince ?? 0
+        const busySecs = busy && busySince > 0 ? Math.max(0, Math.round((Date.now() - busySince) / 1000)) : 0
+        const healthLabel = health === "active" ? "active" : health === "offline" ? "offline" : "checking…"
+        const healthColor = health === "active" ? t.success : health === "offline" ? t.error : t.textMuted
+        return (
+          <box flexDirection="column" marginTop={1}>
+            {sectionTitle("AI")}
+            <text fg={t.text}>  {prov}/{model}</text>
+            {busy ? (
+              <text fg={t.error}>  working… {busySecs}s{busyLabel ? ` · ${busyLabel}` : ""}</text>
+            ) : (
+              <text fg={healthColor}>  {healthLabel}{calls > 0 ? `  ${ok}/${calls} ok${fail > 0 ? ` (${fail} porażek)` : ""}` : ""}</text>
+            )}
+            {err && health === "offline" ? <text fg={t.error}>  err: {err.slice(0, 80)}</text> : null}
+          </box>
+        )
+      })()}
 
       {/* --- Section 6: Test history --- */}
       <box flexDirection="column" marginTop={1}>
@@ -412,21 +412,19 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
         })()}
       </box>
 
-      {/* --- Section 7: Artifacts --- */}
-      <box flexDirection="column" marginTop={1}>
-        {sectionTitle("Artefakty (10 największych)")}
-        {(() => {
-          const as = ar()
-          if (as.length === 0) return <text fg={t.textMuted}>  (brak)</text>
-          return (
-            <box flexDirection="column">
-              {as.map((a, i) => (
-                <text fg={t.textMuted}>  {a.id}  {fmtBytes(a.bytes)}</text>
-              ))}
-            </box>
-          )
-        })()}
-      </box>
+      {/* --- Section 7: Artifacts (top 5) --- */}
+      {(() => {
+        const as = ar()
+        if (as.length === 0) return null
+        return (
+          <box flexDirection="column" marginTop={1}>
+            {sectionTitle(`Artefakty (${as.length})`)}
+            {as.slice(0, 5).map((a) => (
+              <text fg={t.textMuted}>  {a.id}  {fmtBytes(a.bytes)}</text>
+            ))}
+          </box>
+        )
+      })()}
 
       {/* Footer */}
       <box flexDirection="row" marginTop={1}>
@@ -581,130 +579,120 @@ const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
         const saved = m.estimatedSavedTokens ?? 0
         const reduction = m.estimatedReductionPercent ?? 0
         const dedup = m.deduplicatedReads ?? 0
-        const arts = m.artifactsCreated ?? 0
-        const artBytes = m.artifactsBytes ?? 0
 
-        // --- Line 1: token savings (existing) ---
-        // Kolorowane fragmenty: etykiety textMuted, wartości istotne success/accent
-        const line1Parts: unknown[] = []
-        line1Parts.push(<text fg={t.primary}>memory:</text>)
-        line1Parts.push(<text fg={t.textMuted}> tools: </text>)
-        line1Parts.push(<text fg={t.accent}>{calls}</text>)
-        line1Parts.push(<text fg={t.textMuted}> · saved: ~</text>)
-        line1Parts.push(<text fg={t.success}>{fmtTokens(saved)} tok</text>)
-        line1Parts.push(<text fg={t.textMuted}> · </text>)
-        line1Parts.push(<text fg={reduction >= 50 ? t.success : reduction >= 20 ? t.warning : t.textMuted}>{reduction.toFixed(0)}% reduc.</text>)
-        if (dedup > 0) {
-          line1Parts.push(<text fg={t.textMuted}> · dedup: </text>)
-          line1Parts.push(<text fg={t.accent}>{dedup}</text>)
-        }
-        if (arts > 0) {
-          line1Parts.push(<text fg={t.textMuted}> · art: </text>)
-          line1Parts.push(<text fg={t.accent}>{arts}</text>)
-          line1Parts.push(<text fg={t.textMuted}> ({fmtBytes(artBytes)})</text>)
-        }
-
-        // --- Line 2: disk usage ---
+        // --- Wspólne wartości ---
         const disk = m.diskBytes ?? 0
         const diskLimit = m.diskLimitBytes ?? (200 * 1024 * 1024)
         const diskPct = pct(disk, diskLimit)
-        const cacheBytes = m.cacheBytes ?? 0
-        const artifactsBytes = m.artifactsBytes ?? 0
-        const diskColor = diskPct >= 90 ? t.error : diskPct >= 70 ? t.warning : t.textMuted
-        const line2Parts: unknown[] = []
-        line2Parts.push(<text fg={t.textMuted}>disk: </text>)
-        line2Parts.push(<text fg={diskColor}>{fmtBytes(disk)} / {fmtBytes(diskLimit)} ({diskPct}%)</text>)
-        line2Parts.push(<text fg={t.textMuted}> · art </text>)
-        line2Parts.push(<text fg={artifactsBytes > 10 * 1024 * 1024 ? t.warning : t.textMuted}>{fmtBytes(artifactsBytes)}</text>)
-        line2Parts.push(<text fg={t.textMuted}> · cache </text>)
-        line2Parts.push(<text fg={cacheBytes > 50 * 1024 * 1024 ? t.warning : t.textMuted}>{fmtBytes(cacheBytes)}</text>)
-
-        // --- Line 3: context budget + compaction ---
         const ctxTok = m.contextTokens ?? 0
         const ctxLimit = m.contextLimit ?? 0
         const ctxPct = pct(ctxTok, ctxLimit)
         const threshold = m.compactThresholdPct ?? 80
-        const ctxColor = ctxPct >= threshold ? t.error : ctxPct >= threshold - 15 ? t.warning : t.textMuted
-        const factsTok = m.factsTokens ?? 0
-        const factsMax = m.factsMaxTokens ?? 1500
-        const factsPct = pct(factsTok, factsMax)
-        const factsColor = factsPct >= 90 ? t.error : factsPct >= 70 ? t.warning : t.textMuted
-        const line3Parts: unknown[] = []
-        line3Parts.push(<text fg={t.textMuted}>ctx: </text>)
-        line3Parts.push(<text fg={ctxColor}>{fmtTokens(ctxTok)}/{fmtTokens(ctxLimit)} tok ({ctxPct}%, compact@{threshold}%)</text>)
-        line3Parts.push(<text fg={t.textMuted}> · facts: </text>)
-        line3Parts.push(<text fg={factsColor}>{fmtTokens(factsTok)}/{fmtTokens(factsMax)} ({factsPct}%)</text>)
-        line3Parts.push(<text fg={t.textMuted}> [</text>)
-        line3Parts.push(<text fg={m.compactMode === "confirm" ? t.warning : t.textMuted}>{m.compactMode ?? "?"}</text>)
-        line3Parts.push(<text fg={t.textMuted}>]</text>)
-
-        // --- Line 4: session + git + regression ---
-        const handoff = ageLabel(m.handoffAgeMin ?? 0)
         const mod = m.modifiedCount ?? 0
-        const dec = m.decisionsCount ?? 0
         const blk = m.blockersCount ?? 0
         const head = m.headSha || "-"
         const dirty = m.dirtyFiles ?? 0
-        const dirtyLabel = dirty > 0 ? ` (dirty:${dirty})` : ""
         const lsp = m.lspErrorsCount ?? 0
-        const lspLabel = lsp > 0 ? ` · lsp:${lsp}err` : ""
-        const lastGood = m.lastGoodHead ? ` · last-good:${m.lastGoodHead}` : ""
         const reverts = m.revertsCount ?? 0
-        const revertsLabel = reverts > 0 ? ` · reverts:${reverts}` : ""
-        const line4Parts: unknown[] = []
-        line4Parts.push(<text fg={t.textMuted}>handoff: </text>)
-        line4Parts.push(<text fg={(m.handoffAgeMin ?? 0) > 1440 ? t.warning : t.text}>{handoff}</text>)
-        line4Parts.push(<text fg={t.textMuted}> · mod:</text>)
-        line4Parts.push(<text fg={mod > 0 ? t.accent : t.textMuted}>{mod}</text>)
-        line4Parts.push(<text fg={t.textMuted}> · dec:</text>)
-        line4Parts.push(<text fg={dec > 0 ? t.accent : t.textMuted}>{dec}</text>)
-        line4Parts.push(<text fg={t.textMuted}> · blk:</text>)
-        line4Parts.push(<text fg={blk > 0 ? t.error : t.textMuted}>{blk}</text>)
-        line4Parts.push(<text fg={t.textMuted}> · HEAD:</text>)
-        line4Parts.push(<text fg={t.text}>{head}</text>)
-        if (dirty > 0) line4Parts.push(<text fg={t.warning}>{dirtyLabel}</text>)
-        if (lsp > 0) line4Parts.push(<text fg={t.error}> · lsp:{lsp}err</text>)
-        if (m.lastGoodHead) line4Parts.push(<text fg={t.textMuted}> · last-good:</text>, <text fg={t.text}>{m.lastGoodHead}</text>)
-        if (reverts > 0) line4Parts.push(<text fg={t.warning}> · reverts:{reverts}</text>)
+        const aiOn = m.aiEnabled === true
+        const aiHealth = m.aiHealthState ?? "unknown"
+        const aiBusy = m.aiBusy === true
+        const aiBusyLabel = m.aiBusyLabel ?? ""
+        const aiBusySince = m.aiBusySince ?? 0
+        const aiBusySecs = aiBusy && aiBusySince > 0 ? Math.max(0, Math.round((Date.now() - aiBusySince) / 1000)) : 0
 
-        // --- Line 5: cache limits ---
+        // Kolory zalarmowane
+        const ctxColor = ctxPct >= threshold ? t.error : ctxPct >= threshold - 15 ? t.warning : t.text
+        const diskColor = diskPct >= 90 ? t.error : diskPct >= 70 ? t.warning : t.text
+
+        // --- Linia 1: wartość plugina + kluczowe pakiety zasobów ---
+        //   memory  tools:N  saved:~Xk tok (P%)  ctx:P%  disk:P%
+        const line1Parts: unknown[] = []
+        line1Parts.push(<text fg={t.primary}>memory</text>)
+        line1Parts.push(<text fg={t.textMuted}>  tools </text>)
+        line1Parts.push(<text fg={t.accent}>{calls}</text>)
+        if (saved > 0) {
+          line1Parts.push(<text fg={t.textMuted}>  saved </text>)
+          line1Parts.push(<text fg={t.success}>~{fmtTokens(saved)} tok</text>)
+          line1Parts.push(<text fg={t.textMuted}> (</text>)
+          line1Parts.push(<text fg={reduction >= 50 ? t.success : reduction >= 20 ? t.warning : t.textMuted}>{reduction.toFixed(0)}%</text>)
+          line1Parts.push(<text fg={t.textMuted}>)</text>)
+        }
+        if (dedup > 0) {
+          line1Parts.push(<text fg={t.textMuted}>  dedup </text>)
+          line1Parts.push(<text fg={t.accent}>{dedup}</text>)
+        }
+        line1Parts.push(<text fg={t.textMuted}>  ctx </text>)
+        line1Parts.push(<text fg={ctxColor}>{ctxPct}%</text>)
+        line1Parts.push(<text fg={t.textMuted}>  disk </text>)
+        line1Parts.push(<text fg={diskColor}>{diskPct}%</text>)
+        // Progi cache — pokaż tylko gdy zbliżające się do limitu
         const dedupC = m.dedupCacheCount ?? 0
         const dedupM = m.dedupCacheMax ?? 500
         const testC = m.testHistoryCount ?? 0
         const testM = m.testHistoryMax ?? 50
-        const dedupColor = dedupC >= dedupM ? t.warning : t.textMuted
-        const testColor = testC >= testM ? t.warning : t.textMuted
-        const line5Parts: unknown[] = []
-        line5Parts.push(<text fg={t.textMuted}>dedup cache: </text>)
-        line5Parts.push(<text fg={dedupColor}>{dedupC}/{dedupM}</text>)
-        line5Parts.push(<text fg={t.textMuted}> · tests: </text>)
-        line5Parts.push(<text fg={testColor}>{testC}/{testM}</text>)
+        if (dedupC >= dedupM * 0.9) {
+          line1Parts.push(<text fg={t.warning}>  dedup-cache {dedupC}/{dedupM}</text>)
+        }
+        if (testC >= testM * 0.9) {
+          line1Parts.push(<text fg={t.warning}>  tests-cache {testC}/{testM}</text>)
+        }
 
-        // --- AI (Opcja A): nazwa modelu + status ---
-        const aiOn = m.aiEnabled === true
-        const aiModel = m.aiModel ?? "?"
-        const aiProv = m.aiProvider ?? "?"
-        const aiCalls = m.aiCalls ?? 0
-        const aiOk = m.aiSuccesses ?? 0
-        const aiFail = m.aiFailures ?? 0
-        const aiMs = m.aiLastCallMs ?? 0
-        const aiErr = m.aiLastError ?? ""
-        const line6Parts: unknown[] = []
-        line6Parts.push(<text fg={t.textMuted}>ai: </text>)
-        if (!aiOn) {
-          line6Parts.push(<text fg={t.textMuted}>off</text>)
-        } else {
-          line6Parts.push(<text fg={t.accent}>{aiProv}/{aiModel}</text>)
-          const statusColor = aiFail > 0 && aiOk === 0 ? t.error : aiFail > 0 ? t.warning : t.success
-          line6Parts.push(<text fg={t.textMuted}> · </text>)
-          line6Parts.push(<text fg={statusColor}>{aiOk}/{aiCalls} ok</text>)
-          if (aiMs > 0) {
-            line6Parts.push(<text fg={t.textMuted}> · </text>)
-            line6Parts.push(<text fg={t.textMuted}>{aiMs}ms</text>)
-          }
-          if (aiErr && aiFail > 0) {
-            line6Parts.push(<text fg={t.textMuted}> · </text>)
-            line6Parts.push(<text fg={t.error}>err: {aiErr.slice(0, 60)}</text>)
+        // --- Linia 2: stan sesji (tylko istotne, zero = ukryte) ---
+        //   HEAD:sha  dirty:N  mod:N  blk:N  lsp:Nerr  reverts:N  handoff:Xm
+        const line2Parts: unknown[] = []
+        line2Parts.push(<text fg={t.textMuted}>HEAD </text>)
+        line2Parts.push(<text fg={t.text}>{head}</text>)
+        if (dirty > 0) {
+          line2Parts.push(<text fg={t.textMuted}>  dirty </text>)
+          line2Parts.push(<text fg={t.warning}>{dirty}</text>)
+        }
+        if (mod > 0) {
+          line2Parts.push(<text fg={t.textMuted}>  mod </text>)
+          line2Parts.push(<text fg={t.accent}>{mod}</text>)
+        }
+        if (blk > 0) {
+          line2Parts.push(<text fg={t.textMuted}>  blk </text>)
+          line2Parts.push(<text fg={t.error}>{blk}</text>)
+        }
+        if (lsp > 0) {
+          line2Parts.push(<text fg={t.textMuted}>  lsp </text>)
+          line2Parts.push(<text fg={t.error}>{lsp}err</text>)
+        }
+        if (reverts > 0) {
+          line2Parts.push(<text fg={t.textMuted}>  reverts </text>)
+          line2Parts.push(<text fg={t.warning}>{reverts}</text>)
+        }
+        const handoff = ageLabel(m.handoffAgeMin ?? 0)
+        if ((m.handoffAgeMin ?? 0) > 0) {
+          line2Parts.push(<text fg={t.textMuted}>  handoff </text>)
+          line2Parts.push(<text fg={(m.handoffAgeMin ?? 0) > 1440 ? t.warning : t.text}>{handoff}</text>)
+        }
+
+        // --- Linia 3 (opcjonalna): AI gdy włączone ---
+        const aiLine: unknown[] = []
+        if (aiOn) {
+          const aiProv = m.aiProvider ?? "?"
+          const aiModel = m.aiModel ?? "?"
+          aiLine.push(<text fg={t.textMuted}>ai </text>)
+          aiLine.push(<text fg={t.accent}>{aiProv}/{aiModel}</text>)
+          if (aiBusy) {
+            aiLine.push(<text fg={t.error}>  working… {aiBusySecs}s</text>)
+            if (aiBusyLabel) aiLine.push(<text fg={t.error}>  {aiBusyLabel}</text>)
+          } else {
+            const healthLabel = aiHealth === "active" ? "active" : aiHealth === "offline" ? "offline" : "checking…"
+            const healthColor = aiHealth === "active" ? t.success : aiHealth === "offline" ? t.error : t.textMuted
+            aiLine.push(<text fg={healthColor}>  {healthLabel}</text>)
+            const aiCalls = m.aiCalls ?? 0
+            const aiOk = m.aiSuccesses ?? 0
+            if (aiCalls > 0) {
+              aiLine.push(<text fg={t.textMuted}>  </text>)
+              aiLine.push(<text fg={aiOk === 0 && (m.aiFailures ?? 0) > 0 ? t.error : t.success}>{aiOk}/{aiCalls} ok</text>)
+            }
+            const aiErr = m.aiLastError ?? ""
+            if (aiErr && aiHealth === "offline") {
+              aiLine.push(<text fg={t.error}>  err: {aiErr.slice(0, 50)}</text>)
+            }
           }
         }
 
@@ -712,10 +700,7 @@ const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
           <box flexDirection="column" flexShrink={0} border={true} borderStyle="rounded" borderColor={t.textMuted} padding={0} paddingLeft={1} paddingRight={1}>
             <box flexDirection="row">{line1Parts}</box>
             <box flexDirection="row">{line2Parts}</box>
-            <box flexDirection="row">{line3Parts}</box>
-            <box flexDirection="row">{line4Parts}</box>
-            <box flexDirection="row">{line5Parts}</box>
-            {aiOn ? <box flexDirection="row">{line6Parts}</box> : null}
+            {aiOn ? <box flexDirection="row">{aiLine}</box> : null}
           </box>
         )
         } catch (err) {
