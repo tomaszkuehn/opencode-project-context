@@ -501,12 +501,13 @@ Parametry (stałe w `project-context.ts`):
 - `AI_CB_THRESHOLD = 5` — liczba kolejnych awarii do przeciążenia
 - `AI_CB_WINDOW_MS = 60_000` — okno liczenia + długość cooldownu
 
-#### Ograniczenie częstotliwości (skip + throttle)
+#### Ograniczenie częstotliwości (skip + throttle + change-detection)
 
-Aby zminimalizować liczbę wywołań lokalnego modelu, automatyczne ścieżki AI (`aiSummarizeSession` + `aiExtractHumanFacts` na `session.idle`/`compacted`) są podwójnie filtrowane:
+Aby zminimalizować liczbę wywołań lokalnego modelu, automatyczne ścieżki AI (`aiSummarizeSession` + `aiExtractHumanFacts` na `session.idle`/`compacted`) są filtrowane:
 
 1. **Skip przy braku aktywności** — jeśli sesja nic nie zmieniła (`git status` czysty) i nie było uruchomu testów, AI nie jest wołane. Puste `session.idle` po komendach tylko-do-odczytu nie kosztują.
-2. **Throttle czasowy** — min. odstęp `ai.minIntervalMs` (domyślnie 10 min) między auto-wywołaniami AI. Timestamp ostatniego wywołania trzymany w `.opencode/memory/cache/ai-throttle.json` (czyszczony przez `/codemem clear-session`). `0` = throttle wyłączony.
+2. **Throttle czasowy** — `aiSummarizeSession`: min. odstęp `ai.minIntervalMs` (domyślnie 10 min) między auto-wywołaniami. Timestamp ostatniego wywołania trzymany w `.opencode/memory/cache/ai-throttle.json` (czyszczony przez `/codemem clear-session`). `0` = throttle wyłączony.
+3. **Change-detection** — `aiExtractHumanFacts`: pomija wywołanie jeśli pliki źródłowe (`README.md`, `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`) nie zmieniły się od ostatniej ekstrakcji (hash SHA-256 w `.opencode/memory/cache/ai-facts-hash.json`). Bez throttlingu czasowego — działa w tle na każdym `session.idle`/`compacted`.
 
 Health check na `session.created` i `/codemem ai triage` (komendy na żądanie) **ignorują throttle** — triage ma działać zawsze, gdy użytkownik o to prosi.
 
@@ -553,7 +554,8 @@ Moduł AI przeszedł 4 poprawki pokryte testami (`tests/ai-config.test.ts`):
 - `/codemem ai triage` — analizuje ostatnie nieudane testy i proponuje root cause (fallback: lista testów)
 
 **Pliki:**
-- `.opencode/memory/project-facts.ai.md` — AI-ekstrahowane fakty z dokumentacji (regenerowane na `session.idle`, gitignored)
+- `.opencode/memory/project-facts.ai.md` — AI-ekstrahowane fakty z dokumentacji (regenerowane tylko gdy pliki źródłowe uległy zmianie, gitignored)
+- `.opencode/memory/cache/ai-facts-hash.json` — hash plików źródłowych do change-detection (gitignored)
 - `.opencode/memory/plugin-ai.log` — log błędów AI (gitignored, rotacja 1 MB → 200 linii)
 
 ---
@@ -745,7 +747,9 @@ Lekcje można potem swobodnie edytować w `project-facts.md` (sekcja wersjonowan
 
 #### `/codemem tui`
 
-Tekstowy odpowiednik widoku TUI — działa w trybie CLI (non-interactive), gdzie sloty TUI nie są renderowane. Zwraca 5-linijkowy blok z tymi samymi danymi co pasek TUI: oszczędność tokenów, rozmiar na dysku vs limit 200 MB, budżet kontekstu vs próg kompaktacji, stan sesji (handoff, modified, decisions, blockers, HEAD, dirty, LSP, last-good), limity cache (dedup, test-history). Ostrzeżenia (`⚠`) markują przekroczenia: dysk ≥90%, kontekst ≥ próg kompaktacji.
+Tekstowy odpowiednik paska statusu TUI (`app_bottom`) — działa w trybie CLI (non-interactive), gdzie sloty TUI nie są renderowane. Zwraca wielolinijkowy blok z tymi samymi danymi co pasek TUI: oszczędność tokenów, rozmiar na dysku vs limit 200 MB, budżet kontekstu vs próg kompaktacji, stan sesji (HEAD, dirty, mod, blk, lsp, reverts, handoff), limity cache (dedup, test-history) oraz AI (jeśli włączone). Ostrzeżenia (`⚠`) markują przekroczenia: dysk ≥90%, kontekst ≥ próg kompaktacji, timeout AI.
+
+Pełny opis pól — patrz [Pasek statusu (`app_bottom`)](#pasek-statusu-app_bottom).
 
 Przykład wyjścia:
 
@@ -761,7 +765,101 @@ W trybie TUI (interaktywnym) ten sam widok jest odświeżany na żywo co 3 s w p
 
 #### `/codemem dashboard`
 
-Pełnoekranowy dashboard TUI — własny route `memory-dashboard` z 8 sekcjami: oszczędność tokenów, dysk, budżet kontekstu, sesja (goal/status/blokery/błędy LSP), cache, **AI module** (model, liczniki wołań, ostatni błąd), historia testów (10 ostatnich), artefakty (10 największych). Odświeżanie co 3 s. Dostępny w trybie interaktywnym przez `api.route.navigate("memory-dashboard")` lub toast przy przekroczeniu progu.
+Pełnoekranowy dashboard TUI — własny route `memory-dashboard` odświeżany co 3 s. Otwarcie: `Ctrl+D`, slash `/codemem dashboard` (alias `/md`), komenda palette "Memory dashboard". Zamknięcie: `Esc` lub `q`.
+
+Składa się z 7 sekcji renderowanych w jednej kolumnie (3 sekcje są warunkowe — pojawiają się tylko gdy zachodzi warunek):
+
+**1. Oszczędność tokenów** (zawsze, gdy są dane)
+- `tools: N` — liczba wywołań narzędzi w sesji
+- `saved: ~Xk tok (P%)` — estymowane zaoszczędzone tokeny i procent redukcji
+- `dedup: N reads` — liczba zdeduplikowanych odczytów
+- `artifacts: N (X.YKB)` — liczba artefaktów i ich łączny rozmiar
+- Stan `idle (brak danych)` gdy `toolCalls === 0`
+
+**2. Zasoby** (zawsze)
+- `dysk X.YKB / 200.0MB (P%)` — rozmiar katalogu `.opencode/memory` vs limit (domyślnie 200 MB). Kolor: `error` ≥90%, `warning` 70–89%, `text` <70%
+- `art X.YKB · cache X.YKB` — rozmiar artefaktów i cache (wiersz drugorzędny, kolor `textMuted`)
+- `ctx Xk/Yk tok (P%)  compact@80% [suggest]` — budżet kontekstu vs limit, próg kompaktacji, tryb (`suggest`/`confirm`/`auto`). Kolor: `error` ≥ próg, `warning` próg-15 do próg, `text` poniżej
+
+**3. Sesja** (zawsze gdy są metryki)
+- `HEAD <sha>` — aktualny commit (skrócony SHA)
+- `dirty:N` — liczba zmodyfikowanych plików (jeśli >0)
+- `lsp:Nerr` — liczba błędów LSP (jeśli >0)
+- `handoff Xm  mod N  dec N  blk N` — wiek handoffa (label: `now`/`Xm`/`Xh Ym`/`Xd`), liczba zmodyfikowanych plików, decyzji, blokerów
+- `cel: <goal>` — cel sesji z `active-session.json` (jeśli ustawiony)
+- `status: <currentStatus>` — status sesji (jeśli ustawiony)
+- `blokery:` — lista blokerów (kolor `warning`, każdy z prefiksem `- `), tylko jeśli są
+- `błędy LSP:` — lista błędów LSP (kolor `error`, max 5 pozycji), tylko jeśli są
+
+**4. Cache (zbliża się limit)** (warunkowa — tylko gdy dedup ≥80% max LUB tests ≥80% max)
+- `dedup N/500 · tests N/50` — zajętość cache deduplikacji i historii testów vs limity
+- Sekcja znika, gdy oba cache poniżej 80%
+
+**5. AI** (warunkowa — tylko gdy `aiEnabled === true`)
+- `provider/model` — skonfigurowany model AI (np. `openai-compatible/gpt-4o-mini`)
+- `working… Xs · <busyLabel>` — gdy AI zajęte (kolor `error`), licznik sekund od `aiBusySince`
+- `active` / `offline` / `checking…` — stan zdrowia (kolor `success`/`error`/`textMuted`)
+- `N/M ok (K porażek)` — licznik wywołań (sukcesy/ogółem + porażki, jeśli >0)
+- `timeout Xms (1.5×=Yms) · max Zms · last Wms` — konfigurowany timeout, próg twardy (×1.5), maks. obserwowany czas, czas ostatniego wywołania
+- `⚠ prompt przekroczył limit (Xms) — wymaga wydłużenia. /codemem ai auto-timeout` — gdy `aiTimeoutExtended` (kolor `error`)
+- `⚠ prompt zbliża się do limitu (≥80% Xms) — może wymagać wydłużenia` — gdy `aiTimeoutWarn` i nie extended (kolor `warning`)
+- `err: <ostatni błąd>` — ostatni błąd (max 80 znaków), tylko gdy health=`offline`
+
+**6. Historia testów (10 ostatnich)** (zawsze)
+- Dla każdego uruchomienia (od najnowszego, max 10):
+  - `[timestamp] OK|FAIL(code)  <command>` — status zielony (`success`) dla OK, czerwony (`error`) dla FAIL
+  - `<summary>` — podsumowanie (kolor `textMuted`), jeśli niepuste
+  - `failed: a, b, c` — lista nieudanych (max 3, kolor `error`), jeśli są
+- Stan `(brak)` gdy brak historii
+
+**7. Artefakty** (warunkowa — tylko gdy istnieją artefakty)
+- Nagłówek `Artefakty (N)` gdzie N = liczba artefaktów (max 10 wyświetlonych)
+- `<id>  X.YKB` — id artefaktu (hash) i rozmiar, sortowane malejąco po rozmiarze
+
+**Footer:** `Esc = zamknij · /codemem status = tekstowy odpowiednik`
+
+### Pasek statusu (`app_bottom`)
+
+Slot `app_bottom` renderowany w pasku statusu na dole ekranu TUI. Odświeżanie co 3 s. Złożony z 2–3 linii (trzecia opcjonalna, gdy AI włączone). Stan `memory: idle` (jedna linijka) gdy brak metryk lub `toolCalls === 0`.
+
+**Linia 1 — wartość plugina + kluczowe pakiety zasobów**
+
+Format: `memory  tools N  saved ~Xk tok (P%)  dedup N  ctx P%  disk P%  [dedup-cache N/M]  [tests-cache N/M]`
+
+- `memory` (kolor `primary`)
+- `tools N` — liczba wywołań narzędzi
+- `saved ~Xk tok (P%)` — zaoszczędzone tokeny (kolor `success`) + procent redukcji (kolor `success` ≥50%, `warning` 20–49%, `textMuted` <20%). Ukryte gdy saved=0
+- `dedup N` — zdeduplikowane odczyty (kolor `accent`). Ukryte gdy dedup=0
+- `ctx P%` — procent kontekstu (kolor `error` ≥ próg, `warning` próg-15 do próg, `text` poniżej)
+- `disk P%` — procent dysku (kolor `error` ≥90%, `warning` 70–89%, `text` poniżej)
+- `dedup-cache N/M` — tylko gdy dedup ≥90% max (kolor `warning`)
+- `tests-cache N/M` — tylko gdy tests ≥90% max (kolor `warning`)
+
+**Linia 2 — stan sesji (zero = ukryte)**
+
+Format: `HEAD <sha>  dirty N  mod N  blk N  lsp Nerr  reverts N  handoff X`
+
+- `HEAD <sha>` — skrócony SHA (kolor `text`)
+- `dirty N` — zmodyfikowane pliki (kolor `warning`), tylko gdy >0
+- `mod N` — liczba zmian w sesji (kolor `accent`), tylko gdy >0
+- `blk N` — blokery (kolor `error`), tylko gdy >0
+- `lsp Nerr` — błędy LSP (kolor `error`), tylko gdy >0
+- `reverts N` — liczba revertów (kolor `warning`), tylko gdy >0
+- `handoff X` — wiek handoffa (kolor `warning` jeśli >1 dnia, inaczej `text`), tylko gdy >0
+- Gdy wszystkie wartości zero, linia pokazuje samo `HEAD <sha>`
+
+**Linia 3 (opcjonalna) — AI** (tylko gdy `aiEnabled === true`)
+
+Format: `ai provider/model  [working… Xs] | [active|offline|checking…  N/M ok]  [err: <msg>]  [⚠ timeout! | ⚠ timeout near]`
+
+- `ai provider/model` — model AI (kolor `accent`)
+- `working… Xs  <busyLabel>` — gdy zajęte (kolor `error`)
+- `active` (kolor `success`) / `offline` (kolor `error`) / `checking…` (kolor `textMuted`) — stan zdrowia
+- `N/M ok` — licznik wywołań (kolor `error` gdy 0 sukcesów i >0 porażek, inaczej `success`), tylko gdy `aiCalls > 0`
+- `err: <msg>` — ostatni błąd (max 50 znaków, kolor `error`), tylko gdy health=`offline`
+- `⚠ timeout!` — gdy `aiTimeoutExtended` (kolor `error`) + podpowiedź `/codemem ai auto-timeout`
+- `⚠ timeout near` — gdy `aiTimeoutWarn` i nie extended (kolor `warning`)
+- Ostrzeżenia timeout pokazywane tylko gdy AI nie jest zajęte
 
 ### Powiadomienia TUI (toast + dialog)
 
@@ -1359,7 +1457,8 @@ Plugin może wołać tani model AI **niezależny od modelu kodującego**, konfig
 
 **Pliki:**
 
-- `.opencode/memory/project-facts.ai.md` — AI-ekstrahowane fakty z dokumentacji (regenerowane na `session.idle`, gitignored)
+- `.opencode/memory/project-facts.ai.md` — AI-ekstrahowane fakty z dokumentacji (regenerowane tylko gdy pliki źródłowe uległy zmianie, gitignored)
+- `.opencode/memory/cache/ai-facts-hash.json` — hash plików źródłowych do change-detection (gitignored)
 - `.opencode/memory/plugin-ai.log` — log błędów AI (gitignored, rotacja 1 MB → 200 linii)
 
 **Komendy:**
@@ -1375,7 +1474,7 @@ Plugin może wołać tani model AI **niezależny od modelu kodującego**, konfig
 - **Dynamiczny timeout** — twardy cutoff = `timeoutMs × 1.5` (50% bufor); ostrzeżenia w TUI gdy ≥80% (zbliża się) i gdy >100% (przekroczył); `/codemem ai auto-timeout` adaptuje limit do najdłuższego promptu
 - **Rotacja logów** — `plugin-ai.log` / `plugin-errors.log` rotują przy 1 MB (ostatnie 200 linii)
 - **Fallback warstwy** — brak `enabled`/`apiKey` → wyłączone; błąd HTTP → retry 1× + `fallbackChain`; zły JSON → retry 1× z `temperature:0`; zawsze `aiComplete()` → `null` → ścieżka deterministyczna
-- **Skip + throttle** — auto-wywołania AI na `session.idle` pomijane gdy brak aktywności (czysty `git status` + brak testów); throttle `ai.minIntervalMs` (domyślnie 10 min) zapobiega częstym wywołaniom w tej samej sesji
+- **Skip + throttle + change-detection** — `aiSummarizeSession` pomijane gdy brak aktywności + throttle `ai.minIntervalMs` (domyślnie 10 min); `aiExtractHumanFacts` wywoływane tylko gdy pliki źródłowe (`README.md`/`CLAUDE.md`/`AGENTS.md`/`CONTRIBUTING.md`) uległy zmianie (hash w cache), bez throttlingu czasowego
 
 **Priorytet danych w readProjectFacts():** auto-fakty → AI-fakty → fakty ręczne (wersjonowane). Wszystko ucięte do budżetu `maxProjectMemoryTokens`.
 

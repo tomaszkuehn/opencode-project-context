@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { readFileSync, existsSync, readdirSync, statSync, appendFileSync, mkdirSync } from "node:fs"
+import { readFileSync, existsSync, appendFileSync, mkdirSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createSignal, createMemo } from "solid-js"
@@ -40,6 +40,7 @@ type Metrics = {
   diskBytes?: number
   diskLimitBytes?: number
   artifactsBytes?: number
+  artifactsList?: { id: string; bytes: number }[]
   cacheBytes?: number
   handoffAgeMin?: number
   modifiedCount?: number
@@ -110,21 +111,6 @@ function readActiveSession(worktree: string): ActiveSession | null {
 
 function readTestHistory(worktree: string): TestRun[] {
   return readJson<TestRun[]>(join(worktree, ".opencode", "memory", "cache", "test-history.json")) ?? []
-}
-
-function listArtifacts(worktree: string): { id: string; bytes: number }[] {
-  const dir = join(worktree, ".opencode", "memory", "artifacts")
-  if (!existsSync(dir)) return []
-  try {
-    return readdirSync(dir)
-      .filter((f) => f.endsWith(".log"))
-      .map((f) => {
-        let bytes = 0
-        try { bytes = statSync(join(dir, f)).size } catch {}
-        return { id: f.replace(/\.log$/, ""), bytes }
-      })
-      .sort((a, b) => b.bytes - a.bytes)
-  } catch { return [] }
 }
 
 function fmtTokens(n: number): string {
@@ -228,13 +214,11 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
   const [metrics, setMetrics] = createSignal<Metrics | null>(null)
   const [sess, setSess] = createSignal<ActiveSession | null>(null)
   const [tests, setTests] = createSignal<TestRun[]>([])
-  const [arts, setArts] = createSignal<{ id: string; bytes: number }[]>([])
 
   const refresh = () => {
     setMetrics(readMetrics(worktree))
     setSess(readActiveSession(worktree))
     setTests(readTestHistory(worktree).slice(-10).reverse())
-    setArts(listArtifacts(worktree).slice(0, 10))
   }
 
   refresh()
@@ -259,7 +243,6 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
   const m = createMemo(() => metrics())
   const s = createMemo(() => sess())
   const th = createMemo(() => tests())
-  const ar = createMemo(() => arts())
 
   const sectionTitle = (label: string) => (
     <text fg={t.accent} attributes={1}>{label}</text>
@@ -429,7 +412,7 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
 
       {/* --- Section 7: Artifacts (top 5) --- */}
       {(() => {
-        const as = ar()
+        const as = m()?.artifactsList ?? []
         if (as.length === 0) return null
         return (
           <box flexDirection="column" marginTop={1}>

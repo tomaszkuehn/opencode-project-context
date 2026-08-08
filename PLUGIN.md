@@ -493,11 +493,11 @@ Zaimplementowano jako rozszerzenie pluginu. Moduł woła tani model AI (niezale�
 
 **Fallbacki (warstwowo):** brak `enabled`/`apiKey` → moduł wyłączony; błąd sieci/HTTP/timeout → retry 1× + `fallbackChain`; zły JSON → retry `temp:0`. `aiComplete()` zawsze zwraca `null` przy błędzie — nigdy nie rzuca. Wywołujący używa ścieżki deterministycznej. **AI nigdy nie w ścieżce krytycznej.**
 
-**Ograniczenie częstotliwości:** auto-wywołania na `session.idle`/`compacted` są pomijane gdy sesja nic nie zmieniła (czysty `git status` + brak testów) oraz throttle'owane co `minIntervalMs` (domyślnie 10 min). Komendy na żądanie (`/codemem ai triage`) i health check ignorują throttle.
+**Ograniczenie częstotliwości:** auto-wywołania `aiSummarizeSession` na `session.idle`/`compacted` są pomijane gdy sesja nic nie zmieniła (czysty `git status` + brak testów) oraz throttle'owane co `minIntervalMs` (domyślnie 10 min). `aiExtractHumanFacts` używa change-detection: wywołanie tylko gdy pliki źródłowe (`README.md`/`CLAUDE.md`/`AGENTS.md`/`CONTRIBUTING.md`) zmieniły się od ostatniej ekstrakcji (hash w cache), bez throttlingu czasowego. Komendy na żądanie (`/codemem ai triage`) i health check ignorują throttle.
 
 **Dynamiczny timeout:** twardy cutoff = `timeoutMs × 1.5` (50% bufor). Plugin śledzi czas każdego promptu; gdy ≥80% limitu → ostrzeżenie „zbliża się", gdy >100% → info „przekroczył, wymaga wydłużenia" (w TUI). `/codemem ai auto-timeout` ustawia `timeoutMs` = `maxObservedMs × 1.3` (min. 30 s), zapisuje override w cache (przeżywa restarty).
 
-**Pliki:** `project-facts.ai.md` (regenerowane, gitignored), `plugin-ai.log` (log błędów, gitignored), `ai-max-observed.json` (najdłuższy prompt, gitignored), `ai-timeout-override.json` (override z auto-timeout, gitignored).
+**Pliki:** `project-facts.ai.md` (regenerowane tylko gdy źródła zmienione, gitignored), `ai-facts-hash.json` (hash do change-detection, gitignored), `plugin-ai.log` (log błędów, gitignored), `ai-max-observed.json` (najdłuższy prompt, gitignored), `ai-timeout-override.json` (override z auto-timeout, gitignored).
 
 **Komendy diagnostyczne:** `/memory ai status`, `/memory ai auto-timeout`, `/memory ai triage`.
 

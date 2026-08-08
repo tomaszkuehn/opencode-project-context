@@ -27,7 +27,7 @@
         "enabled": true,
         "provider": "openai-compatible",
         "baseUrl": "http://127.0.0.1:1234/v1",
-        "apiKey": "${LM_STUDIO_KEY}",
+        "apiKey": "${sk-lm-Y4ReCs0f:dgBx812M40me1H21YLl7}",
         "model": "qwen/qwen3.5-9b",
         "maxTokens": 1200,
         "temperature": 0,

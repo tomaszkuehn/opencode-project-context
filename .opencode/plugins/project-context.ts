@@ -144,6 +144,7 @@ type Metrics = {
   diskBytes: number
   diskLimitBytes: number
   artifactsBytes: number
+  artifactsList: { id: string; bytes: number }[]  // dla TUI (unika readdirSync+statSync co 3s)
   cacheBytes: number
   handoffAgeMin: number
   modifiedCount: number
@@ -236,7 +237,11 @@ let cfg: Config = { ...DEFAULT_CONFIG }
 let memoryDir = ""
 let worktreePath = ""
 let projectRoot = ""
-let seen: SeenContext[] = []
+let seen: Map<string, SeenContext> = new Map()
+
+function dedupKey(s: Pick<SeenContext, "filePath" | "contentHash" | "lineStart" | "lineEnd">): string {
+  return `${s.filePath}::${s.contentHash}::${s.lineStart ?? 0}-${s.lineEnd ?? "end"}`
+}
 let metrics: Metrics = {
   sessionId: "",
   toolCalls: 0,
@@ -258,6 +263,7 @@ let metrics: Metrics = {
   diskBytes: 0,
   diskLimitBytes: MAX_ARTIFACT_DIR_MB * 1024 * 1024,
   artifactsBytes: 0,
+  artifactsList: [],
   cacheBytes: 0,
   handoffAgeMin: 0,
   modifiedCount: 0,
@@ -311,6 +317,7 @@ let compactSuggestionShown: boolean = false // czy już pokazano sugestię dla o
 let lastAssistantModel: string = ""        // "provider/model" do autodetekcji limitu
 let currentSessionId: string = ""           // bieżąca sesja (do client.session.messages)
 let pluginClient: any = null                 // ref client API z closure pluginu (do compact-now, ai triage)
+let lastUserCommandTs: number = 0          // timestamp ostatniej komendy /codemem — pomija throttle auto-AI w idle
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -534,9 +541,10 @@ function aiCbRecordSuccess() {
 }
 
 // --- AI auto-run throttle -----------------------------------------------------
-// #3: ogranicza częstotliwość AUTOMATYCZNYCH wywołań AI (aiSummarizeSession +
-// aiExtractHumanFacts na session.idle/compacted). Komendy na żądanie
-// (/codemem ai triage) oraz health check na session.created NIE są throttlowane.
+// #3: ogranicza częstotliwość AUTOMATYCZNYCH wywołań AI (aiSummarizeSession
+// na session.idle/compacted). Komendy na żądanie (/codemem ai triage),
+// health check na session.created oraz aiExtractHumanFacts NIE są throttlowane.
+// aiExtractHumanFacts używa własnego change-detection (hash plików źródłowych).
 // Stan trzyma timestamp ostatniego auto-wywołania w pliku cache.
 function aiThrottlePath(): string {
   return join(memoryDir, "cache", "ai-throttle.json")
@@ -549,9 +557,11 @@ function aiAutoThrottleMs(): number {
 }
 
 // Zwraca true jeśli auto-wywołanie AI powinno być pominięte (zbyt wkrótce od ostatniego).
+// Pomija throttle gdy idle/compacted nastąpiło w wyniku komendy użytkownika (okno 30 s).
 function aiAutoThrottled(): boolean {
   const minInterval = aiAutoThrottleMs()
   if (minInterval <= 0) return false        // 0 = throttle wyłączony
+  if (lastUserCommandTs > 0 && (Date.now() - lastUserCommandTs) < 30000) return false
   const data = readJson<{ lastAutoRunTs?: number } | null>(aiThrottlePath())
   const last = data?.lastAutoRunTs ?? 0
   return (Date.now() - last) < minInterval
@@ -1027,10 +1037,12 @@ async function aiTriageFailedTests(): Promise<string> {
 
 // --- AI-enhanced: podsumowanie sesji do handoffa -------------------------------
 // Zwraca krótki status (1-2 zdania) na bazie edytowanych plików + testów. Fallback: puste.
-async function aiSummarizeSession(edits: string[], testStatus?: { command: string; exitCode: number; summary: string }): Promise<string> {
+async function aiSummarizeSession(edits: string[], testStatus?: { command: string; exitCode: number; summary: string }, extra?: { decisions?: string[]; blockers?: string[] }): Promise<string> {
   const bits: string[] = []
   if (edits.length) bits.push(`Edytowane pliki: ${edits.slice(0, 10).join(", ")}`)
   if (testStatus) bits.push(`Test: ${testStatus.command} (exit ${testStatus.exitCode}): ${testStatus.summary}`)
+  if (extra?.decisions?.length) bits.push(`Decyzje: ${extra.decisions.join(" | ")}`)
+  if (extra?.blockers?.length) bits.push(`Blokery: ${extra.blockers.join(" | ")}`)
   if (!bits.length) return ""
   const system = "Jesteś asystentem dev. Podsumuj krótko stan sesji (1-2 zdania po polsku)."
   const prompt = `Stan sesji:\n${bits.join("\n")}\n\nPodsumuj krótko co zrobiono i na czym stiano:`
@@ -1040,7 +1052,32 @@ async function aiSummarizeSession(edits: string[], testStatus?: { command: strin
 
 // --- AI-enhanced: ekstrakcja konwencji/ryzyka z README/CLAUDE.md ---------------
 // Zwraca listę faktów "ludzkich" wykrytych z dokumentacji. Fallback: puste (auto-fakty deterministyczne wystarczą).
+// Zmiana: wywołanie tylko gdy pliki źródłowe uległy zmianie (hash w cache). Bez throttlingu czasowego.
+
+function aiFactsHashPath(): string {
+  return join(memoryDir, "cache", "ai-facts-hash.json")
+}
+
+function computeDocsHash(root: string): string {
+  const candidates = ["README.md", "CLAUDE.md", "AGENTS.md", "CONTRIBUTING.md"]
+  const h = createHash("sha256")
+  for (const f of candidates) {
+    const p = join(root, f)
+    if (existsSync(p)) h.update(readText(p))
+  }
+  return h.digest("hex")
+}
+
+function aiHumanFactsChanged(root: string): boolean {
+  const hash = computeDocsHash(root)
+  const data = readJson<{ hash?: string } | null>(aiFactsHashPath())
+  if (data?.hash === hash) return false
+  try { writeJson(aiFactsHashPath(), { hash }) } catch { /* swallow */ }
+  return true
+}
+
 async function aiExtractHumanFacts(root: string): Promise<string> {
+  if (!aiHumanFactsChanged(root)) return ""
   const candidates = ["README.md", "CLAUDE.md", "AGENTS.md", "CONTRIBUTING.md"]
   const docs: string[] = []
   for (const f of candidates) {
@@ -1451,18 +1488,18 @@ function loadDedupCache() {
   if (!cfg.persistentDedupCache) return
   const data = readJson<SeenContext[]>(dedupCachePath())
   if (Array.isArray(data)) {
-    seen = data
+    seen = new Map(data.map((s) => [dedupKey(s), s]))
   }
 }
 
 function saveDedupCache() {
   if (!cfg.persistentDedupCache) return
   // LRU eviction by deliveredAt (oldest first) when over capacity
-  if (seen.length > cfg.maxDedupCacheEntries) {
-    seen.sort((a, b) => (a.deliveredAt < b.deliveredAt ? -1 : 1))
-    seen = seen.slice(seen.length - cfg.maxDedupCacheEntries)
+  if (seen.size > cfg.maxDedupCacheEntries) {
+    const entries = Array.from(seen.values()).sort((a, b) => (a.deliveredAt < b.deliveredAt ? -1 : 1))
+    seen = new Map(entries.slice(entries.length - cfg.maxDedupCacheEntries).map((s) => [dedupKey(s), s]))
   }
-  writeJson(dedupCachePath(), seen)
+  writeJson(dedupCachePath(), Array.from(seen.values()))
 }
 
 // --- Additions: load / save test history --------------------------------------
@@ -2502,14 +2539,14 @@ function summarizeSearch(result: string): string {
 function dedupeRead(filePath: string, content: string, lineStart?: number, lineEnd?: number): string | null {
   if (!cfg.deduplicateReadResults) return content
   const h = hashContent(content)
-  const rangeKey = `${filePath}:${lineStart ?? 0}-${lineEnd ?? "end"}`
-  const existing = seen.find((s) => s.filePath === filePath && s.contentHash === h && `${s.filePath}:${s.lineStart ?? 0}-${s.lineEnd ?? "end"}` === rangeKey)
+  const key = dedupKey({ filePath, contentHash: h, lineStart, lineEnd })
+  const existing = seen.get(key)
   if (existing) {
     metrics.deduplicatedReads += 1
     metrics.dedupSavedChars += content.length
     return `Already delivered in this session (hash: ${h.slice(0, 8)}, source: ${existing.source}, at ${existing.deliveredAt}). Use read_artifact or read again explicitly if needed.`
   }
-  seen.push({ filePath, contentHash: h, lineStart, lineEnd, deliveredAt: new Date().toISOString(), source: "read" })
+  seen.set(key, { filePath, contentHash: h, lineStart, lineEnd, deliveredAt: new Date().toISOString(), source: "read" })
   return content
 }
 
@@ -2617,8 +2654,9 @@ const FLUSH_METRICS_MIN_INTERVAL_MS = 2000
 let lastFlushMetricsAt = 0
 
 function flushMetrics() {
-  // Throttle: zapisuj metryki najwyżej co 2s — unikamy pętli EMFILE
-  // gdy flushMetrics jest wołane z tool.execute.after + session.idle w krótkim czasie.
+  // Lekkie metryki: liczniki, estymaty, AI — bez git/stat/IO poza writeJson.
+  // Ciężkie (git, stat, regression) aktualizowane tylko przez flushMetricsHeavy()
+  // na sesja.created/idle/compacted — nie przy każdym tool callu.
   const now = Date.now()
   if (now - lastFlushMetricsAt < FLUSH_METRICS_MIN_INTERVAL_MS) return
   lastFlushMetricsAt = now
@@ -2627,23 +2665,48 @@ function flushMetrics() {
     : 0
   metrics.estimatedSavedChars = Math.max(0, metrics.rawChars - metrics.deliveredChars) + metrics.dedupSavedChars
   metrics.estimatedSavedTokens = Math.round(metrics.estimatedSavedChars / 4)
-  // --- TUI live stats ---
   metrics.contextTokens = lastContextTokens
   metrics.contextLimit = effectiveContextLimit()
   metrics.compactThresholdPct = cfg.compactThreshold
   metrics.compactMode = cfg.compactMode
+  metrics.diskLimitBytes = MAX_ARTIFACT_DIR_MB * 1024 * 1024
+  metrics.dedupCacheMax = cfg.maxDedupCacheEntries
+  metrics.dedupCacheCount = seen.size
+  metrics.testHistoryMax = cfg.maxTestHistoryEntries
+  // --- AI live stats (lekkie, tylko kopiowanie z aiStatus) ---
+  metrics.aiEnabled = aiStatus.enabled
+  metrics.aiProvider = aiStatus.provider
+  metrics.aiModel = aiStatus.model
+  metrics.aiCalls = aiStatus.calls
+  metrics.aiSuccesses = aiStatus.successes
+  metrics.aiFailures = aiStatus.failures
+  metrics.aiLastCallMs = aiStatus.lastCallMs
+  metrics.aiLastError = aiStatus.lastError
+  metrics.aiHealthState = aiStatus.healthState
+  metrics.aiBusy = aiStatus.busy
+  metrics.aiBusyLabel = aiStatus.busyLabel
+  metrics.aiBusySince = aiStatus.busySince
+  metrics.aiConfigTimeoutMs = aiStatus.configTimeoutMs
+  metrics.aiMaxObservedMs = aiStatus.maxObservedMs
+  metrics.aiLastDurationMs = aiStatus.lastDurationMs
+  metrics.aiTimeoutWarn = aiStatus.timeoutWarn
+  metrics.aiTimeoutExtended = aiStatus.timeoutExtended
+  writeJson(metricsPath(), metrics)
+  // Addition 1: persist dedup cache to disk
+  failOpen(() => saveDedupCache(), "saveDedupCache")
+}
+
+function flushMetricsHeavy(dirtyCount?: number) {
+  // Ciężkie metryki: git, stat, regression — wołane tylko na eventach sesji.
+  // dirtyCount opcjonalnie z zewnątrz (gdy session.idle już policzyło gitStatusPorcelain).
   metrics.headSha = failOpenReturn(() => getHeadSha().slice(0, 8), "", "flushMetrics headSha")
-  metrics.dirtyFiles = failOpenReturn(() => gitStatusPorcelain().length, 0, "flushMetrics dirty")
+  metrics.dirtyFiles = dirtyCount ?? failOpenReturn(() => gitStatusPorcelain().length, 0, "flushMetrics dirty")
   metrics.artifactsBytes = dirSizeBytes(artifactsDir())
   metrics.cacheBytes = dirSizeBytes(join(memoryDir, "cache"))
   metrics.diskBytes = metrics.artifactsBytes + metrics.cacheBytes
-  metrics.diskLimitBytes = MAX_ARTIFACT_DIR_MB * 1024 * 1024
-  metrics.dedupCacheMax = cfg.maxDedupCacheEntries
-  metrics.dedupCacheCount = seen.length
-  metrics.testHistoryMax = cfg.maxTestHistoryEntries
-  metrics.testHistoryCount = testHistory.length
   metrics.factsMaxTokens = cfg.maxProjectMemoryTokens
   metrics.factsTokens = failOpenReturn(() => estimateTokens(readText(factsPath()) ?? ""), 0, "flushMetrics factsTokens")
+  metrics.testHistoryCount = testHistory.length
   const sess = failOpenReturn(() => readActiveSession(), null, "flushMetrics activeSession")
   if (sess) {
     metrics.modifiedCount = sess.modifiedFiles?.length ?? 0
@@ -2665,27 +2728,17 @@ function flushMetrics() {
   }
   const reg = failOpenReturn(() => findRegressionWindow(), { lastGood: null, firstRed: null, failingTest: "" }, "flushMetrics regression")
   metrics.lastGoodHead = reg.lastGood?.head?.slice(0, 8) ?? ""
-  // --- AI live stats ---
-  metrics.aiEnabled = aiStatus.enabled
-  metrics.aiProvider = aiStatus.provider
-  metrics.aiModel = aiStatus.model
-  metrics.aiCalls = aiStatus.calls
-  metrics.aiSuccesses = aiStatus.successes
-  metrics.aiFailures = aiStatus.failures
-  metrics.aiLastCallMs = aiStatus.lastCallMs
-  metrics.aiLastError = aiStatus.lastError
-  metrics.aiHealthState = aiStatus.healthState
-  metrics.aiBusy = aiStatus.busy
-  metrics.aiBusyLabel = aiStatus.busyLabel
-  metrics.aiBusySince = aiStatus.busySince
-  metrics.aiConfigTimeoutMs = aiStatus.configTimeoutMs
-  metrics.aiMaxObservedMs = aiStatus.maxObservedMs
-  metrics.aiLastDurationMs = aiStatus.lastDurationMs
-  metrics.aiTimeoutWarn = aiStatus.timeoutWarn
-  metrics.aiTimeoutExtended = aiStatus.timeoutExtended
+  // Artifact list for TUI (avoids separate readdirSync+statSync every 3s)
+  metrics.artifactsList = failOpenReturn(() => {
+    const dir = artifactsDir()
+    const files = readdirSync(dir).filter((f) => f.endsWith(".log"))
+    return files.map((f) => {
+      let bytes = 0
+      try { bytes = statSync(join(dir, f)).size } catch {}
+      return { id: f.replace(/\.log$/, ""), bytes }
+    }).sort((a, b) => b.bytes - a.bytes)
+  }, [], "flushMetrics artifactsList")
   writeJson(metricsPath(), metrics)
-  // Addition 1: persist dedup cache to disk
-  failOpen(() => saveDedupCache(), "saveDedupCache")
 }
 
 // ---------------------------------------------------------------------------
@@ -2711,7 +2764,7 @@ function memoryStatus(): string {
     `Worktree: ${worktreePath}`,
     `Project facts: ${estimateTokens(facts)} tokens (${facts.length} chars)`,
     `Active session: ${sess?.sessionId ?? "none"} (updated ${sess?.updatedAt ?? "-"})`,
-    `Dedup cache: ${seen.length} wpisów${cfg.persistentDedupCache ? " (trwały na dysku)" : " (tylko RAM)"}`,
+    `Dedup cache: ${seen.size} wpisów${cfg.persistentDedupCache ? " (trwały na dysku)" : " (tylko RAM)"}`,
     `Artifacts: ${artifacts} (${(artifactBytes / 1024).toFixed(1)} KB)`,
     `Test history: ${testHistory.length} uruchomień`,
     `Metrics: ${metrics.toolCalls} tool calls, ${metrics.estimatedReductionPercent}% reduction, ${metrics.deduplicatedReads} dedup reads`,
@@ -2792,7 +2845,7 @@ function memoryShow(): string {
 }
 
 function memoryClearSession(): string {
-  seen = []
+  seen = new Map()
   metrics = {
     ...metrics,
     sessionId: lastSessionId,
@@ -2812,6 +2865,7 @@ function memoryClearSession(): string {
     dirtyFiles: 0,
     diskBytes: 0,
     artifactsBytes: 0,
+    artifactsList: [],
     cacheBytes: 0,
     handoffAgeMin: 0,
     modifiedCount: 0,
@@ -3033,6 +3087,87 @@ async function memoryCompactNow(client: any): Promise<string> {
     "",
     compactStatusText(),
   ].join("\n")
+}
+
+// --- /codemem exit ------------------------------------------------------------
+// Wrapper na /exit: przed wyjściem generuje podsumowanie AI sesji, zapisuje je
+// do active-session.json (currentStatus) i wywołuje natywną komendę exit TUI.
+// AI jest wywoływane synchronicznie (await) — throttle z session.idle NIE ma tu
+// zastosowania, bo to żądanie na żądanie użytkownika (jak /codemem ai triage).
+// Fallback gdy AI wyłączone/niedostępne: deterministic podsumowanie z handoffa.
+
+async function codememExit(client: any): Promise<string> {
+  const edits = gitStatusPorcelain()
+
+  // Odśwież auto-fakty przed zapisem kontekstu (pakiet, testy, struktura).
+  if (cfg.autoExtractFacts) failOpen(() => refreshAutoFacts(), "refreshAutoFacts on /codemem exit")
+
+  const handoff = buildHandoff(lastSessionId, edits)
+  writeActiveSession(handoff)
+
+  const lines: string[] = []
+  let aiError = false
+
+  // AI summary — omija throttle (komenda na żądanie), await przed exit.
+  // Generuj zawsze gdy AI włączone i jest JAKAKOLWIEK aktywność sesji,
+  // nie tylko git-zmiany (decyzje, blokery, testy też są istotne).
+  const aiOn = aiEffectiveConfig() !== null
+  const hasActivity = edits.length > 0
+    || !!handoff.testStatus
+    || handoff.decisions.length > 0
+    || handoff.blockers.length > 0
+    || handoff.modifiedFiles.length > 0
+  if (aiOn && hasActivity) {
+    const ok = await failOpenAsync(async () => {
+      const summary = await aiSummarizeSession(edits, handoff.testStatus ? {
+        command: handoff.testStatus.lastCommand,
+        exitCode: handoff.testStatus.exitCode,
+        summary: handoff.testStatus.summary,
+      } : undefined, {
+        decisions: handoff.decisions.slice(0, 5),
+        blockers: handoff.blockers.slice(0, 3),
+      })
+      if (summary) {
+        const s = readActiveSession()
+        if (s) {
+          s.currentStatus = summary.slice(0, 400)
+          writeActiveSession(s)
+          lines.push(`AI: ${summary}`)
+        }
+      }
+    }, "aiSummarizeSession on /codemem exit")
+    if (!ok) aiError = true
+  }
+
+  // Deterministic fallback summary gdy AI nie dało wyniku.
+  if (lines.length === 0) {
+    const bits: string[] = []
+    if (handoff.modifiedFiles.length) bits.push(`zmodyfikowano ${handoff.modifiedFiles.length} plik(ów)`)
+    if (handoff.testStatus) bits.push(`test ${handoff.testStatus.lastCommand} exit=${handoff.testStatus.exitCode}`)
+    if (handoff.blockers.length) bits.push(`${handoff.blockers.length} bloker(ów)`)
+    if (handoff.decisions.length) bits.push(`${handoff.decisions.length} decyzji`)
+    lines.push(bits.length ? `Sesja: ${bits.join(", ")}.` : "Sesja: brak istotnych zmian.")
+  }
+
+  // Wywołaj natywny exit przez TUI, tylko gdy nie było błędu AI.
+  // Komenda "exit" odpowiada /exit (alias /quit, /q).
+  if (!aiError) {
+    let exited = false
+    try {
+      if (client?.tui?.executeCommand) {
+        await client.tui.executeCommand({ body: { command: "exit" } })
+        exited = true
+      }
+    } catch { /* ignore — pozwól zwrócić instrukcję */ }
+
+    if (!exited) {
+      lines.push("", "Nie udało się programowo wywołać exit. Naciśnij ctrl+x q lub /exit ręcznie.")
+    }
+  } else {
+    lines.push("", "AI summary nie powiodło się — exit wstrzymany. Sprawdź /codemem ai status.")
+  }
+
+  return lines.join("\n")
 }
 
 // --- /codemem init ------------------------------------------------------------
@@ -3342,13 +3477,13 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
             aiStatus.busySince = 0
             flushMetrics()
           }
-          // Health check AI: wyślij krótki ping, by zweryfikować dostępność modelu
-          // i nadpisaj aiStatus. Stare błędy z poprzedniej sesji nie pokazują się
-          // w TUI — zamiast nich widać active/offline.
-          await failOpenAsync(async () => {
+          // Health check AI: wyslij krotki ping, by zweryfikowac dostepnosc modelu
+          // i nadpisaj aiStatus. Fire-and-forget — nie blokuje pipeline.
+          failOpenAsync(async () => {
             await aiHealthCheck()
             flushMetrics()
           }, "aiHealthCheck on session.created")
+          failOpen(() => flushMetricsHeavy(), "flushMetricsHeavy on session.created")
         } else if (type === "session.idle" || type === "session.compacted") {
           const sessionId = event?.properties?.info?.sessionID ?? lastSessionId ?? ""
           // Use execSync-based helper: the Bun shell `$` may be unavailable
@@ -3362,7 +3497,7 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
           const hasActivity = edits.length > 0 || !!handoff.testStatus
           const aiThrottled = hasActivity && aiAutoThrottled()
           if (hasActivity && !aiThrottled) {
-            await failOpenAsync(async () => {
+            failOpenAsync(async () => {
               const summary = await aiSummarizeSession(edits, handoff.testStatus ? {
                 command: handoff.testStatus.lastCommand,
                 exitCode: handoff.testStatus.exitCode,
@@ -3383,19 +3518,18 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
           // Auto-extract deterministic facts (build/test/architecture/environment)
           if (cfg.autoExtractFacts && cfg.autoExtractOnEvents.includes(type)) {
             failOpen(() => refreshAutoFacts(), `refreshAutoFacts on ${type}`)
-            // AI enhancement: konwencje/ryzyka z README/CLAUDE.md (fallback = puste)
-            // #3: throttle razem z aiSummarizeSession — dzielą ten sam timestamp.
-            if (!aiThrottled) {
-              await failOpenAsync(async () => {
-                const humanFacts = await aiExtractHumanFacts(worktreePath || projectRoot)
-                if (humanFacts) {
-                  const p = join(memoryDir, "project-facts.ai.md")
-                  writeFileSync(p, `# AI-ekstrahowane fakty (regenerowane przy session.idle)\n# Nie edytuj ręcznie; usuń plik by wyłączyć.\n\n${humanFacts}\n`, "utf8")
-                }
-              }, "aiExtractHumanFacts")
-            }
+            // AI enhancement: konwencje/ryzyka z README/CLAUDE.md — działa w tle,
+            // wyzwalane tylko gdy pliki źródłowe uległy zmianie (hash w cache), bez throttlingu czasowego.
+            failOpenAsync(async () => {
+              const humanFacts = await aiExtractHumanFacts(worktreePath || projectRoot)
+              if (humanFacts) {
+                const p = join(memoryDir, "project-facts.ai.md")
+                writeFileSync(p, `# AI-ekstrahowane fakty (regenerowane przy session.idle)\n# Nie edytuj ręcznie; usuń plik by wyłączyć.\n\n${humanFacts}\n`, "utf8")
+              }
+            }, "aiExtractHumanFacts")
           }
           flushMetrics()
+          failOpen(() => flushMetricsHeavy(edits.length), "flushMetricsHeavy")
         } else if (type === "session.deleted") {
           // optional: remove non-persistent session data
           failOpen(() => {
@@ -3417,7 +3551,9 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
           const fp: string = event?.properties?.path ?? event?.properties?.info?.path ?? ""
           if (fp) {
             // invalidate read cache for that file (Addition 1: persistent cache)
-            seen = seen.filter((s) => s.filePath !== fp)
+            for (const [k, s] of seen) {
+              if (s.filePath === fp) seen.delete(k)
+            }
             failOpen(() => saveDedupCache(), "saveDedupCache on file.edited")
             // Addition 2: track edit count in session trace
             const rel = failOpenReturn(() => relative(worktreePath, fp) || fp, fp, "relative path")
@@ -3563,6 +3699,7 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
         const raw = `${cmdPart}${argPart}`.trim()
         const norm = raw.trim()
         if (!/^\/?((codemem|context|regression)\b)/.test(norm)) return
+        lastUserCommandTs = Date.now()
         const slash = norm.startsWith("/") ? norm : "/" + norm
         const result = await dispatchCommand(slash)
         if (result === undefined) return
@@ -3578,6 +3715,7 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
         const cmdPart: string = input?.command ?? ""
         const argPart = input?.arguments != null ? " " + String(input.arguments) : ""
         const cmd: string = `${cmdPart}${argPart}`.trim()
+        lastUserCommandTs = Date.now()
         const r = await dispatchCommand(cmd)
         if (r !== undefined) output.result = r
       }, "tui.command.execute")
@@ -3621,6 +3759,7 @@ async function dispatchCommand(cmd: string): Promise<string | undefined> {
   if (cmd.startsWith("/codemem ai triage")) return aiTriageFailedTests()
   if (cmd.startsWith("/codemem ai")) return aiStatusText()
   if (cmd.startsWith("/codemem tui")) return memoryTuiDump()
+  if (cmd.startsWith("/codemem exit")) return codememExit(pluginClient)
   if (cmd.startsWith("/codemem dashboard")) return "Dashboard TUI: użyj w trybie interaktywnym (route: memory-dashboard)"
   if (cmd.startsWith("/context budget")) return contextBudget()
   if (cmd.startsWith("/context artifacts")) return contextArtifacts()

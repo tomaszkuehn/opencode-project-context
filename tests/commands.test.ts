@@ -259,6 +259,35 @@ describe("plugin commands — /codemem compact & compact-now", () => {
   })
 })
 
+describe("plugin commands — /codemem exit", () => {
+  it("returns a session summary and calls tui.executeCommand with exit", async () => {
+    h = await createHarness()
+    const calls: any[] = []
+    h.api.client.tui.executeCommand = async (args: any) => { calls.push(args) }
+    const out = await h.runCommand("/codemem exit")
+    expect(typeof out).toBe("string")
+    expect(out.length).toBeGreaterThan(0)
+    // exit command dispatched to TUI
+    expect(calls.length).toBe(1)
+    expect(calls[0]?.body?.command).toBe("exit")
+    // handoff written
+    expect(h.memoryExists("active-session.json")).toBe(true)
+  })
+
+  it("falls back gracefully when tui.executeCommand unavailable", async () => {
+    h = await createHarness()
+    h.api.client.tui = undefined
+    const out = await h.runCommand("/codemem exit")
+    expect(out).toMatch(/Sesja:|Nie udało się programowo wywołać exit/i)
+  })
+
+  it("writes deterministic summary when no edits in session", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/codemem exit")
+    expect(out).toMatch(/Sesja:/)
+  })
+})
+
 describe("plugin commands — /context", () => {
   it("budget: prints budget breakdown", async () => {
     h = await createHarness()
@@ -448,7 +477,7 @@ describe("plugin hooks — command_result.txt contract", () => {
       "/codemem init", "/codemem auto-refresh", "/codemem auto", "/codemem propose",
       "/codemem commit", "/codemem clear-session", "/codemem compact-status",
       "/codemem compact-reset", "/codemem compact-now", "/codemem compact",
-      "/codemem tui", "/codemem dashboard",
+      "/codemem tui", "/codemem dashboard", "/codemem exit",
       "/codemem ai status", "/codemem ai auto-timeout", "/codemem ai triage",
       "/regression feature add x", "/regression feature list", "/regression feature check x",
     ]

@@ -1,5 +1,5 @@
 ---
-description: Manage project memory (status, show, save, clear-session, clear-project, compact, init, auto, auto-refresh, compact-status, compact-now, compact-reset, test-history, lesson, tui, dashboard, ai status, ai auto-timeout, ai triage)
+description: Manage project memory (status, show, save, clear-session, clear-project, compact, init, auto, auto-refresh, compact-status, compact-now, compact-reset, test-history, lesson, tui, dashboard, exit, ai status, ai auto-timeout, ai triage)
 ---
 
 You are executing the memory utility subcommand: "$ARGUMENTS".
@@ -26,6 +26,7 @@ Otherwise (plugin absent or no matching precomputed result), follow the manual r
 - `auto` / `auto-refresh` — may regenerate only `.opencode/memory/project-facts.auto.md`.
 - `init` — write template to `.opencode/memory/project-facts.md` only if missing.
 - `clear-session`, `compact*`, `tui`, `dashboard` — report what would happen; do not delete files.
+- `exit` — generuje podsumowanie AI sesji (jeśli włączone), zapisuje do `active-session.json`, a następnie wywołuje natywną komendę `exit` TUI. Wrapper na `/exit` — alias `/codemem exit`.
 
 If the precomputed file conflicts with the manual map, TRUST THE PRECOMPUTED FILE (it is authoritative, produced deterministically).
 
