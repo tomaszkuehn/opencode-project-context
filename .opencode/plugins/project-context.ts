@@ -22,6 +22,7 @@ type AIConfig = {
   temperature: number
   timeoutMs: number
   fallbackChain: string[]          // kolejne modele do spróbowania
+  minIntervalMs: number             // min. odstęp między automatycznymi wywołaniami AI (session.idle/compacted); 0 = brak throttle. Komendy na żądanie (/codemem ai triage) ignorują.
 }
 
 type Config = {
@@ -90,6 +91,7 @@ const DEFAULT_CONFIG: Config = {
     temperature: 0,
     timeoutMs: 30000,
     fallbackChain: [],
+    minIntervalMs: 600000,
   },
 }
 
@@ -507,6 +509,35 @@ function aiCbRecordSuccess() {
   aiCbFailuresSince = 0
   aiCbFirstFailureAt = 0
   aiCbTrippedUntil = 0
+}
+
+// --- AI auto-run throttle -----------------------------------------------------
+// #3: ogranicza częstotliwość AUTOMATYCZNYCH wywołań AI (aiSummarizeSession +
+// aiExtractHumanFacts na session.idle/compacted). Komendy na żądanie
+// (/codemem ai triage) oraz health check na session.created NIE są throttlowane.
+// Stan trzyma timestamp ostatniego auto-wywołania w pliku cache.
+function aiThrottlePath(): string {
+  return join(memoryDir, "cache", "ai-throttle.json")
+}
+
+function aiAutoThrottleMs(): number {
+  const c = cfg?.ai
+  if (!c || typeof c.minIntervalMs !== "number" || c.minIntervalMs < 0) return 600000
+  return c.minIntervalMs
+}
+
+// Zwraca true jeśli auto-wywołanie AI powinno być pominięte (zbyt wkrótce od ostatniego).
+function aiAutoThrottled(): boolean {
+  const minInterval = aiAutoThrottleMs()
+  if (minInterval <= 0) return false        // 0 = throttle wyłączony
+  const data = readJson<{ lastAutoRunTs?: number } | null>(aiThrottlePath())
+  const last = data?.lastAutoRunTs ?? 0
+  return (Date.now() - last) < minInterval
+}
+
+// Zapisuje timestamp bieżącego auto-wywołania (wołać TYLKO przy rzeczywistym auto-wywołaniu).
+function aiAutoMarkRun() {
+  try { writeJson(aiThrottlePath(), { lastAutoRunTs: Date.now() }) } catch { /* swallow */ }
 }
 
 const LOG_ROTATE_MAX_BYTES = 1_000_000   // 1 MB — przy tnij do ostatnich 200 linii
@@ -2666,6 +2697,7 @@ function memoryClearSession(): string {
     rmSync(dedupCachePath(), { force: true })
     rmSync(testHistoryPath(), { force: true })
     rmSync(metricsPath(), { force: true })
+    rmSync(aiThrottlePath(), { force: true })
     // Prune artifacts dir (session-scoped); recreate empty.
     rmSync(artifactsDir(), { recursive: true, force: true })
     ensureDir(artifactsDir())
@@ -3177,33 +3209,43 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
           const handoff = buildHandoff(sessionId, edits)
           writeActiveSession(handoff)
           // AI enhancement: krótki podsumowany status sesji (async, fallback = puste)
-          await failOpenAsync(async () => {
-            const summary = await aiSummarizeSession(edits, handoff.testStatus ? {
-              command: handoff.testStatus.lastCommand,
-              exitCode: handoff.testStatus.exitCode,
-              summary: handoff.testStatus.summary,
-            } : undefined)
-            if (summary) {
-              const s = readActiveSession()
-              if (s) {
-                s.currentStatus = summary.slice(0, 400)
-                writeActiveSession(s)
+          // #1: skip gdy brak aktywności (brak edycji + brak testStatus) — nie ma co podsumowywać.
+          // #3: throttle — min. odstęp między auto-wywołaniami AI (domyślnie 10 min).
+          const hasActivity = edits.length > 0 || !!handoff.testStatus
+          const aiThrottled = hasActivity && aiAutoThrottled()
+          if (hasActivity && !aiThrottled) {
+            await failOpenAsync(async () => {
+              const summary = await aiSummarizeSession(edits, handoff.testStatus ? {
+                command: handoff.testStatus.lastCommand,
+                exitCode: handoff.testStatus.exitCode,
+                summary: handoff.testStatus.summary,
+              } : undefined)
+              if (summary) {
+                const s = readActiveSession()
+                if (s) {
+                  s.currentStatus = summary.slice(0, 400)
+                  writeActiveSession(s)
+                }
               }
-            }
-          }, "aiSummarizeSession")
+            }, "aiSummarizeSession")
+            aiAutoMarkRun()
+          }
           // Addition 2: fold per-session trace into persistent aggregated trace
           failOpen(() => mergeTraceIntoGlobal(), "mergeTraceIntoGlobal")
           // Auto-extract deterministic facts (build/test/architecture/environment)
           if (cfg.autoExtractFacts && cfg.autoExtractOnEvents.includes(type)) {
             failOpen(() => refreshAutoFacts(), `refreshAutoFacts on ${type}`)
             // AI enhancement: konwencje/ryzyka z README/CLAUDE.md (fallback = puste)
-            await failOpenAsync(async () => {
-              const humanFacts = await aiExtractHumanFacts(worktreePath || projectRoot)
-              if (humanFacts) {
-                const p = join(memoryDir, "project-facts.ai.md")
-                writeFileSync(p, `# AI-ekstrahowane fakty (regenerowane przy session.idle)\n# Nie edytuj ręcznie; usuń plik by wyłączyć.\n\n${humanFacts}\n`, "utf8")
-              }
-            }, "aiExtractHumanFacts")
+            // #3: throttle razem z aiSummarizeSession — dzielą ten sam timestamp.
+            if (!aiThrottled) {
+              await failOpenAsync(async () => {
+                const humanFacts = await aiExtractHumanFacts(worktreePath || projectRoot)
+                if (humanFacts) {
+                  const p = join(memoryDir, "project-facts.ai.md")
+                  writeFileSync(p, `# AI-ekstrahowane fakty (regenerowane przy session.idle)\n# Nie edytuj ręcznie; usuń plik by wyłączyć.\n\n${humanFacts}\n`, "utf8")
+                }
+              }, "aiExtractHumanFacts")
+            }
           }
           flushMetrics()
         } else if (type === "session.deleted") {

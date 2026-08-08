@@ -486,11 +486,14 @@ Zaimplementowano jako rozszerzenie pluginu. Moduł woła tani model AI (niezale�
   "maxTokens": 800,
   "temperature": 0,
   "timeoutMs": 30000,
-  "fallbackChain": []                 // kolejne modele do spróbowania
+  "fallbackChain": [],                 // kolejne modele do spróbowania
+  "minIntervalMs": 600000              // min. odstęp między auto-wywołaniami (session.idle); 0 = bez throttle
 }
 ```
 
 **Fallbacki (warstwowo):** brak `enabled`/`apiKey` → moduł wyłączony; błąd sieci/HTTP/timeout → retry 1× + `fallbackChain`; zły JSON → retry `temp:0`. `aiComplete()` zawsze zwraca `null` przy błędzie — nigdy nie rzuca. Wywołujący używa ścieżki deterministycznej. **AI nigdy nie w ścieżce krytycznej.**
+
+**Ograniczenie częstotliwości:** auto-wywołania na `session.idle`/`compacted` są pomijane gdy sesja nic nie zmieniła (czysty `git status` + brak testów) oraz throttle'owane co `minIntervalMs` (domyślnie 10 min). Komendy na żądanie (`/codemem ai triage`) i health check ignorują throttle.
 
 **Pliki:** `project-facts.ai.md` (regenerowane, gitignored), `plugin-ai.log` (log błędów, gitignored).
 

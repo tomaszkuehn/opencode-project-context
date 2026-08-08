@@ -419,6 +419,7 @@ Sekcja `ai` jest **zagnieżdżonym obiektem** wewnątrz opcji pluginu — czyli 
 | `temperature`  | `0`                   | Temperatura (0 = deterministyczne) |
 | `timeoutMs`    | `30000`               | Timeout żądania (AbortController) |
 | `fallbackChain`| `[]`                  | Lista kolejnych modeli do spróbowania przy błędzie pierwszego |
+| `minIntervalMs`| `600000`              | Min. odstęp (ms) między automatycznymi wywołaniami AI na `session.idle`/`compacted`; `0` = brak throttle. Komendy na żądanie (`/codemem ai triage`) i health check ignorują |
 
 #### Przykłady per provider
 
@@ -499,6 +500,15 @@ Po 5 kolejnych awariach w oknie 60 s AI jest **automatycznie wyłączane na 60 s
 Parametry (stałe w `project-context.ts`):
 - `AI_CB_THRESHOLD = 5` — liczba kolejnych awarii do przeciążenia
 - `AI_CB_WINDOW_MS = 60_000` — okno liczenia + długość cooldownu
+
+#### Ograniczenie częstotliwości (skip + throttle)
+
+Aby zminimalizować liczbę wywołań lokalnego modelu, automatyczne ścieżki AI (`aiSummarizeSession` + `aiExtractHumanFacts` na `session.idle`/`compacted`) są podwójnie filtrowane:
+
+1. **Skip przy braku aktywności** — jeśli sesja nic nie zmieniła (`git status` czysty) i nie było uruchomu testów, AI nie jest wołane. Puste `session.idle` po komendach tylko-do-odczytu nie kosztują.
+2. **Throttle czasowy** — min. odstęp `ai.minIntervalMs` (domyślnie 10 min) między auto-wywołaniami AI. Timestamp ostatniego wywołania trzymany w `.opencode/memory/cache/ai-throttle.json` (czyszczony przez `/codemem clear-session`). `0` = throttle wyłączony.
+
+Health check na `session.created` i `/codemem ai triage` (komendy na żądanie) **ignorują throttle** — triage ma działać zawsze, gdy użytkownik o to prosi.
 
 #### Ochrona przed zawieszonymi promisami (`failOpenAsync`)
 
@@ -1343,6 +1353,7 @@ Plugin może wołać tani model AI **niezależny od modelu kodującego**, konfig
 - **failOpenAsync timeout** — asynchroniczne hooki mają 35 s na odpowiedź; bez tego opencode czeka w nieskończoność
 - **Rotacja logów** — `plugin-ai.log` / `plugin-errors.log` rotują przy 1 MB (ostatnie 200 linii)
 - **Fallback warstwy** — brak `enabled`/`apiKey` → wyłączone; błąd HTTP → retry 1× + `fallbackChain`; zły JSON → retry 1× z `temperature:0`; zawsze `aiComplete()` → `null` → ścieżka deterministyczna
+- **Skip + throttle** — auto-wywołania AI na `session.idle` pomijane gdy brak aktywności (czysty `git status` + brak testów); throttle `ai.minIntervalMs` (domyślnie 10 min) zapobiega częstym wywołaniom w tej samej sesji
 
 **Priorytet danych w readProjectFacts():** auto-fakty → AI-fakty → fakty ręczne (wersjonowane). Wszystko ucięte do budżetu `maxProjectMemoryTokens`.
 
