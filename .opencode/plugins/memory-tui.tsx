@@ -67,6 +67,12 @@ type Metrics = {
   aiBusy?: boolean
   aiBusyLabel?: string
   aiBusySince?: number
+  // --- Dynamiczny timeout ---
+  aiConfigTimeoutMs?: number
+  aiMaxObservedMs?: number
+  aiLastDurationMs?: number
+  aiTimeoutWarn?: boolean
+  aiTimeoutExtended?: boolean
 }
 
 type ActiveSession = {
@@ -372,6 +378,12 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
         const busySecs = busy && busySince > 0 ? Math.max(0, Math.round((Date.now() - busySince) / 1000)) : 0
         const healthLabel = health === "active" ? "active" : health === "offline" ? "offline" : "checking…"
         const healthColor = health === "active" ? t.success : health === "offline" ? t.error : t.textMuted
+        // Dynamiczny timeout
+        const cfgTimeout = mm?.aiConfigTimeoutMs ?? 0
+        const maxObs = mm?.aiMaxObservedMs ?? 0
+        const lastDur = mm?.aiLastDurationMs ?? 0
+        const tw = mm?.aiTimeoutWarn === true
+        const te = mm?.aiTimeoutExtended === true
         return (
           <box flexDirection="column" marginTop={1}>
             {sectionTitle("AI")}
@@ -381,6 +393,9 @@ function MemoryDashboard(props: { worktree: string; theme: any; api: TuiPluginAp
             ) : (
               <text fg={healthColor}>  {healthLabel}{calls > 0 ? `  ${ok}/${calls} ok${fail > 0 ? ` (${fail} porażek)` : ""}` : ""}</text>
             )}
+            {cfgTimeout > 0 ? <text fg={t.textMuted}>  timeout {cfgTimeout}ms (1.5×={Math.round(cfgTimeout * 1.5)}ms){maxObs > 0 ? ` · max ${maxObs}ms` : ""}{lastDur > 0 ? ` · last ${lastDur}ms` : ""}</text> : null}
+            {te ? <text fg={t.error}>  ⚠ prompt przekroczył limit ({cfgTimeout}ms) — wymaga wydłużenia. /codemem ai auto-timeout</text> : null}
+            {!te && tw ? <text fg={t.warning}>  ⚠ prompt zbliża się do limitu (≥80% {cfgTimeout}ms) — może wymagać wydłużenia</text> : null}
             {err && health === "offline" ? <text fg={t.error}>  err: {err.slice(0, 80)}</text> : null}
           </box>
         )
@@ -692,6 +707,18 @@ const MemoryTuiPlugin: TuiPlugin = async (api: TuiPluginApi) => {
             const aiErr = m.aiLastError ?? ""
             if (aiErr && aiHealth === "offline") {
               aiLine.push(<text fg={t.error}>  err: {aiErr.slice(0, 50)}</text>)
+            }
+            // Dynamiczny timeout: ostrzeżenia w pasku statusu
+            const aiCfgTimeout = m.aiConfigTimeoutMs ?? 0
+            const aiTe = m.aiTimeoutExtended === true
+            const aiTw = m.aiTimeoutWarn === true
+            if (aiCfgTimeout > 0 && !aiBusy) {
+              if (aiTe) {
+                aiLine.push(<text fg={t.error}>  ⚠ timeout!</text>)
+                aiLine.push(<text fg={t.textMuted}> /codemem ai auto-timeout</text>)
+              } else if (aiTw) {
+                aiLine.push(<text fg={t.warning}>  ⚠ timeout near</text>)
+              }
             }
           }
         }

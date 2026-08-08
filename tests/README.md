@@ -58,6 +58,7 @@ Wszystkie komendy udostępniane przez plugin mają dedykowane testy:
 | `tui` | ✓ |
 | `dashboard` | ✓ |
 | `ai` / `ai status` | ✓ |
+| `ai auto-timeout` | ✓ (brak obserwacji + z obserwacją + floor 30s) |
 | `ai triage` | ✓ (pusty + zasiany fallback) |
 
 ### `/context` (pełne pokrycie)

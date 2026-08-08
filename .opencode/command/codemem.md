@@ -1,5 +1,5 @@
 ---
-description: Manage project memory (status, show, save, clear-session, clear-project, compact, init, auto, auto-refresh, compact-status, compact-now, compact-reset, test-history, lesson, tui, dashboard, ai status, ai triage)
+description: Manage project memory (status, show, save, clear-session, clear-project, compact, init, auto, auto-refresh, compact-status, compact-now, compact-reset, test-history, lesson, tui, dashboard, ai status, ai auto-timeout, ai triage)
 ---
 
 You are executing the memory utility subcommand: "$ARGUMENTS".
@@ -22,6 +22,7 @@ Otherwise (plugin absent or no matching precomputed result), follow the manual r
 - `lesson <text>` — append the text to `.opencode/memory/lessons.md` (only this file).
 - `test-history` — READ ONLY. Print last entries from `.opencode/memory/cache/test-history.json`.
 - `ai status` / `ai triage` — READ-ONLY diagnostics from `.opencode/memory/plugin-ai.log` / config summary. No external calls unless truly configured.
+- `ai auto-timeout` — adjusts the AI prompt timeout based on max observed duration (writes to `.opencode/memory/cache/ai-timeout-override.json`).
 - `auto` / `auto-refresh` — may regenerate only `.opencode/memory/project-facts.auto.md`.
 - `init` — write template to `.opencode/memory/project-facts.md` only if missing.
 - `clear-session`, `compact*`, `tui`, `dashboard` — report what would happen; do not delete files.

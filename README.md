@@ -510,6 +510,24 @@ Aby zminimalizować liczbę wywołań lokalnego modelu, automatyczne ścieżki A
 
 Health check na `session.created` i `/codemem ai triage` (komendy na żądanie) **ignorują throttle** — triage ma działać zawsze, gdy użytkownik o to prosi.
 
+#### Dynamiczny timeout promptów
+
+Twardy cutoff żądania AI to **`ai.timeoutMs × 1.5`** (dopuszczamy o 50% dłuższy czas niż pierwotnie zdefiniowany). Plugin śledzi czas każdego promptu i:
+
+1. **Ostrzeżenie z wyprzedzeniem** — gdy czas promptu ≥ 80% `ai.timeoutMs`, TUI pokazuje żółte `⚠ timeout near` (w pasku statusu i dashboardzie). `/codemem ai status` raportuje „zbliża się do limitu".
+2. **Info o przekroczeniu** — gdy prompt przekroczył pierwotny `ai.timeoutMs` (ale zmieścił się w 1.5×), TUI pokazuje czerwone `⚠ timeout!` + podpowiedź `/codemem ai auto-timeout`. `/codemem ai status` raportuje „wymaga wydłużenia".
+3. **Najdłuższy prompt** — zapisany w `.opencode/memory/cache/ai-max-observed.json` (persistentny, czyszczony przez `/codemem clear-session`).
+
+**Komenda auto-timeout:** `/codemem ai auto-timeout` ustawia `ai.timeoutMs` = `maxObservedMs × 1.3` (min. 30 s), zapisuje override w `.opencode/memory/cache/ai-timeout-override.json` (stosowany przy starcie pluginu, przeżywa restarty). Dzięki temu timeout adaptuje się do realnego zachowania lokalnego modelu.
+
+```text
+/codemem ai auto-timeout
+# → AI auto-timeout: ustawiono timeoutMs = 52000ms
+#   (najdłuższy prompt: 40000ms × 1.3 + zaokrąglenie)
+#   Twardy limit (1.5×): 78000ms
+#   Override zapisany w cache/ai-timeout-override.json.
+```
+
 #### Ochrona przed zawieszonymi promisami (`failOpenAsync`)
 
 Wszystkie asynchroniczne ścieżki pluginu (`session.idle`, `session.compacted`, `tool.execute.after`) są owinięte w `failOpenAsync`, która **wyściga** oryginalną promisę z timeoutem 35 s (`FAIL_OPEN_ASYNC_TIMEOUT_MS`). Gdy task nie odpowie w tym czasie (np. `fetch` bez odpowiedzi, `session.prompt` wiszący na SDK), promisa zostaje odrzucona, błąd trafia do logu, a opencode nie czeka w nieskończoność — **ESC przerywa natychmiast**.
@@ -530,7 +548,8 @@ Moduł AI przeszedł 4 poprawki pokryte testami (`tests/ai-config.test.ts`):
 | `parseModelKey` — ucięty modelID | `"openrouter/cohere/model:free"` → `modelID="cohere"` (truncated) → OpenRouter 500 | Split tylko na pierwszym slashu (modelID może mieć slashe) |
 
 **Komendy diagnostyczne:**
-- `/codemem ai status` — czy AI włączone, jaki model (z configa), liczniki wołań/sukcesów/porażek, ostatni błąd
+- `/codemem ai status` — czy AI włączone, jaki model (z configa), liczniki wołań/sukcesów/porażek, timeout (pierwotny + twardy 1.5×), najdłuższy prompt, ostrzeżenia timeout, ostatni błąd
+- `/codemem ai auto-timeout` — automatycznie wydłuża `ai.timeoutMs` do `maxObservedMs × 1.3` (min. 30 s); zapisuje override w cache (przeżywa restarty)
 - `/codemem ai triage` — analizuje ostatnie nieudane testy i proponuje root cause (fallback: lista testów)
 
 **Pliki:**
@@ -949,7 +968,8 @@ To klasyczny scenariusz dla `/regression`: agent dostaje zgłoszenie o błędzie
 /codemem init             # wypełnij project-facts.md podpowiedziami z repo
 /codemem test-history      # historia uruchomień testów/buildów
 /codemem lesson <text>    # zapisz trudną lekcję do project-facts.md (sekcja ## Lekcje)
-/codemem ai status         # czy AI włączone? jaki model? liczniki wołań
+/codemem ai status         # czy AI włączone? timeout, najdłuższy prompt, ostrzeżenia
+/codemem ai auto-timeout  # wydłuż timeout do max×1.3 (adaptacja do lokalnego modelu)
 /codemem ai triage         # root-cause ostatnich nieudanych testów (AI lub fallback)
 /codemem tui              # tekstowy widok TUI (działa w CLI)
 /codemem dashboard        # pełnoekranowy dashboard TUI (route: memory-dashboard)
@@ -1344,13 +1364,15 @@ Plugin może wołać tani model AI **niezależny od modelu kodującego**, konfig
 
 **Komendy:**
 
-- `/codemem ai status` — czy AI włączone, provider, model, liczniki wołań/ sukcesów/porażek, ostatni czas i błąd
+- `/codemem ai status` — czy AI włączone, provider, model, liczniki, timeout (pierwotny + twardy 1.5×), najdłuższy prompt, ostrzeżenia, ostatni błąd
+- `/codemem ai auto-timeout` — wydłuża `ai.timeoutMs` do `maxObservedMs × 1.3` (min. 30 s), zapisuje override w cache
 - `/codemem ai triage` — analizuje ostatnie 3 nieudane testy i proponuje root cause (fallback: lista testów)
 
 **Niezawodność:**
 
 - **Circuit breaker** — po 5 kolejnych awariach w oknie 60 s AI wyłączane na 60 s (cooldown), potem reset
 - **failOpenAsync timeout** — asynchroniczne hooki mają 35 s na odpowiedź; bez tego opencode czeka w nieskończoność
+- **Dynamiczny timeout** — twardy cutoff = `timeoutMs × 1.5` (50% bufor); ostrzeżenia w TUI gdy ≥80% (zbliża się) i gdy >100% (przekroczył); `/codemem ai auto-timeout` adaptuje limit do najdłuższego promptu
 - **Rotacja logów** — `plugin-ai.log` / `plugin-errors.log` rotują przy 1 MB (ostatnie 200 linii)
 - **Fallback warstwy** — brak `enabled`/`apiKey` → wyłączone; błąd HTTP → retry 1× + `fallbackChain`; zły JSON → retry 1× z `temperature:0`; zawsze `aiComplete()` → `null` → ścieżka deterministyczna
 - **Skip + throttle** — auto-wywołania AI na `session.idle` pomijane gdy brak aktywności (czysty `git status` + brak testów); throttle `ai.minIntervalMs` (domyślnie 10 min) zapobiega częstym wywołaniom w tej samej sesji

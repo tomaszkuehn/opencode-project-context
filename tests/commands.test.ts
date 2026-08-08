@@ -214,6 +214,32 @@ describe("plugin commands — /codemem", () => {
     const out = await h.runCommand("/codemem ai triage")
     expect(out).toMatch(/AI triage niedostępne|niedost|vitest|boom/i)
   })
+
+  it("ai auto-timeout: no observations → returns no-data message", async () => {
+    h = await createHarness()
+    const out = await h.runCommand("/codemem ai auto-timeout")
+    expect(out).toMatch(/brak zarejestrowanych|brak|retry/i)
+  })
+
+  it("ai auto-timeout: with observed duration sets override = max × 1.3", async () => {
+    h = await createHarness()
+    h.writeMemoryFile("cache/ai-max-observed.json", JSON.stringify({ maxObservedMs: 40000 }))
+    h = await h.reload()
+    const out = await h.runCommand("/codemem ai auto-timeout")
+    expect(out).toMatch(/timeoutMs = 52000ms|52000/)
+    expect(out).toMatch(/1\.5×.*78000ms|78000/i)
+    // override zapisany
+    const ov = h.readMemoryJson("cache/ai-timeout-override.json")
+    expect(ov.timeoutMs).toBe(52000)
+  })
+
+  it("ai auto-timeout: min 30000ms floor even for tiny observations", async () => {
+    h = await createHarness()
+    h.writeMemoryFile("cache/ai-max-observed.json", JSON.stringify({ maxObservedMs: 5000 }))
+    h = await h.reload()
+    const out = await h.runCommand("/codemem ai auto-timeout")
+    expect(out).toMatch(/timeoutMs = 30000ms|30000/)
+  })
 })
 
 describe("plugin commands — /codemem compact & compact-now", () => {
@@ -423,7 +449,7 @@ describe("plugin hooks — command_result.txt contract", () => {
       "/codemem commit", "/codemem clear-session", "/codemem compact-status",
       "/codemem compact-reset", "/codemem compact-now", "/codemem compact",
       "/codemem tui", "/codemem dashboard",
-      "/codemem ai status", "/codemem ai triage",
+      "/codemem ai status", "/codemem ai auto-timeout", "/codemem ai triage",
       "/regression feature add x", "/regression feature list", "/regression feature check x",
     ]
     for (const c of cmds) {

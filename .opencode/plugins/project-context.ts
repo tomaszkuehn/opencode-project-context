@@ -171,6 +171,12 @@ type Metrics = {
   aiBusy: boolean
   aiBusyLabel: string
   aiBusySince: number
+  // --- Dynamiczny timeout ---
+  aiConfigTimeoutMs: number
+  aiMaxObservedMs: number
+  aiLastDurationMs: number
+  aiTimeoutWarn: boolean
+  aiTimeoutExtended: boolean
 }
 
 type TestRun = {
@@ -278,6 +284,11 @@ let metrics: Metrics = {
   aiBusy: false,
   aiBusyLabel: "",
   aiBusySince: 0,
+  aiConfigTimeoutMs: 0,
+  aiMaxObservedMs: 0,
+  aiLastDurationMs: 0,
+  aiTimeoutWarn: false,
+  aiTimeoutExtended: false,
 }
 let lastInjectedContext = ""
 let pendingSystemContext: string = ""                 // blok PROJECT MEMORY do wstrzykiwania w system prompt (experimental.chat.system.transform)
@@ -456,6 +467,12 @@ type AIStatus = {
   busy: boolean
   busyLabel: string
   busySince: number
+  // --- Dynamiczny timeout ---
+  configTimeoutMs: number           // pierwotny timeout z configa (do porównań w TUI)
+  maxObservedMs: number            // najdłuższy zarejestrowany czas promptu (persistent)
+  lastDurationMs: number           // czas ostatniego promptu
+  timeoutWarn: boolean             // true gdy ostatni prompt ≥80% limitu (zbliża się)
+  timeoutExtended: boolean         // true gdy ostatni prompt przekroczył pierwotny limit (ale zmieścił się w 1.5×)
 }
 
 let aiStatus: AIStatus = {
@@ -471,6 +488,11 @@ let aiStatus: AIStatus = {
   busy: false,
   busyLabel: "",
   busySince: 0,
+  configTimeoutMs: 0,
+  maxObservedMs: 0,
+  lastDurationMs: 0,
+  timeoutWarn: false,
+  timeoutExtended: false,
 }
 
 // Circuit breaker: po N kolejnych awariach w oknie czasowym AI jest wyłączane,
@@ -538,6 +560,77 @@ function aiAutoThrottled(): boolean {
 // Zapisuje timestamp bieżącego auto-wywołania (wołać TYLKO przy rzeczywistym auto-wywołaniu).
 function aiAutoMarkRun() {
   try { writeJson(aiThrottlePath(), { lastAutoRunTs: Date.now() }) } catch { /* swallow */ }
+}
+
+// --- Dynamiczny timeout: śledzenie najdłuższego czasu promptu -----------------
+// maxObservedMs jest persistentne (przeżywa restarty sesji), bo celem jest
+// adaptacja timeoutu do realnego zachowania lokalnego modelu w czasie.
+function aiMaxObservedPath(): string {
+  return join(memoryDir, "cache", "ai-max-observed.json")
+}
+
+function aiLoadMaxObserved(): number {
+  const data = readJson<{ maxObservedMs?: number } | null>(aiMaxObservedPath())
+  return (data && typeof data.maxObservedMs === "number") ? data.maxObservedMs : 0
+}
+
+function aiSaveMaxObserved(ms: number) {
+  try { writeJson(aiMaxObservedPath(), { maxObservedMs: ms }) } catch { /* swallow */ }
+}
+
+// Efektywny twardy timeout: pierwotny timeoutMs × 1.5 (dopuszczamy o 50% dłuższy czas).
+function aiEffectiveTimeoutMs(c: AIConfig): number {
+  const base = c.timeoutMs > 0 ? c.timeoutMs : 30000
+  return Math.round(base * 1.5)
+}
+
+// Próg ostrzeżenia "zbliża się do limitu" — 80% pierwotnego timeoutMs.
+function aiTimeoutWarnThresholdMs(c: AIConfig): number {
+  const base = c.timeoutMs > 0 ? c.timeoutMs : 30000
+  return Math.round(base * 0.8)
+}
+
+// --- Timeout override (z komendy /codemem ai auto-timeout) --------------------
+// Ustawia pierwotny timeoutMs na wartość większą o 30% od najdłuższego dotąd
+// zarejestrowanego promptu. Przeżywa restarty (zapisane w cache).
+function aiTimeoutOverridePath(): string {
+  return join(memoryDir, "cache", "ai-timeout-override.json")
+}
+
+function aiLoadTimeoutOverride(): number {
+  const data = readJson<{ timeoutMs?: number } | null>(aiTimeoutOverridePath())
+  return (data && typeof data.timeoutMs === "number" && data.timeoutMs > 0) ? data.timeoutMs : 0
+}
+
+function aiSaveTimeoutOverride(ms: number) {
+  try { writeJson(aiTimeoutOverridePath(), { timeoutMs: ms }) } catch { /* swallow */ }
+}
+
+function aiClearTimeoutOverride() {
+  try { rmSync(aiTimeoutOverridePath(), { force: true }) } catch { /* swallow */ }
+}
+
+// /codemem ai auto-timeout: ustaw timeoutMs = maxObservedMs * 1.3 (min. 30 s).
+// Zwraca komunikat potwierdzający. Gdy brak obserwacji, sugeruje retry później.
+function aiAutoTimeoutCommand(): string {
+  const observed = aiStatus.maxObservedMs || aiLoadMaxObserved()
+  if (observed <= 0) {
+    return [
+      "AI auto-timeout: brak zarejestrowanych czasów promptów.",
+      "Wywołaj komendę po co najmniej jednym udanym prompcie AI.",
+    ].join("\n")
+  }
+  const newTimeout = Math.max(30000, Math.round(observed * 1.3))
+  cfg.ai.timeoutMs = newTimeout
+  aiSaveTimeoutOverride(newTimeout)
+  aiStatus.configTimeoutMs = newTimeout
+  flushMetrics()
+  return [
+    `AI auto-timeout: ustawiono timeoutMs = ${newTimeout}ms`,
+    `  (najdłuższy prompt: ${observed}ms × 1.3 + zaokrąglenie)`,
+    `  Twardy limit (1.5×): ${Math.round(newTimeout * 1.5)}ms`,
+    `  Override zapisany w cache/ai-timeout-override.json.`,
+  ].join("\n")
 }
 
 const LOG_ROTATE_MAX_BYTES = 1_000_000   // 1 MB — przy tnij do ostatnich 200 linii
@@ -702,7 +795,11 @@ async function aiCallOnce(c: AIConfig, system: string, prompt: string, jsonMode:
   const headers = aiBuildHeaders(c)
   const body = JSON.stringify(aiBuildBody(c, system, prompt, jsonMode))
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), c.timeoutMs)
+  // Dynamiczny timeout: dopuszczamy o 50% dłuższy czas niż pierwotny timeoutMs.
+  // Gdy pierwotny limit minie, dostajemy timeoutExtended flag (w aiComplete),
+  // a twardy cutoff następuje dopiero przy 1.5×.
+  const hardTimeout = aiEffectiveTimeoutMs(c)
+  const timer = setTimeout(() => ctrl.abort(), hardTimeout)
   try {
     const res = await fetch(url, { method: "POST", headers, body, signal: ctrl.signal })
     if (!res.ok) {
@@ -758,7 +855,22 @@ async function aiComplete(opts: {
   aiStatus.busy = true
   aiStatus.busyLabel = opts.label ?? "processing"
   aiStatus.busySince = Date.now()
+  aiStatus.configTimeoutMs = c.timeoutMs
+  aiStatus.timeoutWarn = false
+  aiStatus.timeoutExtended = false
   flushMetrics()
+
+  // Helper: zaktualizuj metryki czasu promptu (wołany po każdej próbie).
+  const recordDuration = (ms: number) => {
+    aiStatus.lastDurationMs = ms
+    const warnThreshold = aiTimeoutWarnThresholdMs(c)
+    aiStatus.timeoutWarn = ms >= warnThreshold
+    aiStatus.timeoutExtended = ms > c.timeoutMs
+    if (ms > aiStatus.maxObservedMs) {
+      aiStatus.maxObservedMs = ms
+      aiSaveMaxObserved(ms)
+    }
+  }
 
   try {
     for (let i = 0; i < models.length; i++) {
@@ -788,15 +900,19 @@ async function aiComplete(opts: {
             }
           }
         }
+        const duration = Date.now() - t0
         aiStatus.successes += 1
-        aiStatus.lastCallMs = Date.now() - t0
+        aiStatus.lastCallMs = duration
         aiStatus.lastError = ""
+        recordDuration(duration)
         aiCbRecordSuccess()
         return text
       } catch (e: any) {
+        const duration = Date.now() - t0
         aiStatus.failures += 1
-        aiStatus.lastCallMs = Date.now() - t0
-        const msg = e?.name === "AbortError" ? `timeout (${cc.timeoutMs}ms)` : safeErrorString(e)
+        aiStatus.lastCallMs = duration
+        recordDuration(duration)
+        const msg = e?.name === "AbortError" ? `timeout (${aiEffectiveTimeoutMs(cc)}ms)` : safeErrorString(e)
         aiLogError(`call failed (${model}): ${msg}`)
         aiCbRecordFailure()
         // spróbuj kolejny model z fallbackChain (jeśli błąd sieciowy / HTTP)
@@ -873,8 +989,21 @@ function aiStatusText(): string {
   lines.push(`Model: ${eff?.model ?? aiStatus.model}`)
   lines.push(`Wołania: ${aiStatus.calls} (sukces: ${aiStatus.successes}, porażka: ${aiStatus.failures})`)
   lines.push(`Ostatni czas: ${aiStatus.lastCallMs}ms`)
+  // Dynamiczny timeout
+  const cfgTimeout = eff?.timeoutMs ?? aiStatus.configTimeoutMs ?? 0
+  const hardLimit = cfgTimeout > 0 ? Math.round(cfgTimeout * 1.5) : 0
+  lines.push(`Timeout: ${cfgTimeout}ms (twardy limit 1.5×: ${hardLimit}ms)`)
+  if (aiStatus.maxObservedMs > 0) {
+    lines.push(`Najdłuższy prompt: ${aiStatus.maxObservedMs}ms`)
+  }
+  if (aiStatus.timeoutExtended) {
+    lines.push(`⚠ Ostatni prompt przekroczył pierwotny limit (${cfgTimeout}ms) — wymaga wydłużenia.`)
+  } else if (aiStatus.timeoutWarn) {
+    lines.push(`⚠ Ostatni prompt zbliżył się do limitu (≥80% ${cfgTimeout}ms) — może wymagać wydłużenia.`)
+  }
   lines.push(aiStatus.lastError ? `Ostatni błąd: ${aiStatus.lastError}` : "Brak błędów.")
   if (aiStatus.failures > 0) lines.push("Fallback deterministyczny aktywny (AI nie przeszkadza).")
+  lines.push("Komenda: /codemem ai auto-timeout — wydłuża timeout do max×1.3")
   return lines.join("\n")
 }
 
@@ -945,6 +1074,8 @@ function initMemoryLayout(worktree: string) {
   loadDedupCache()
   loadTestHistory()
   loadSessionTrace()
+  // AI: load persistent max observed prompt duration (for dynamic timeout)
+  aiStatus.maxObservedMs = aiLoadMaxObserved()
 }
 
 function factsPath(): string {
@@ -2547,6 +2678,11 @@ function flushMetrics() {
   metrics.aiBusy = aiStatus.busy
   metrics.aiBusyLabel = aiStatus.busyLabel
   metrics.aiBusySince = aiStatus.busySince
+  metrics.aiConfigTimeoutMs = aiStatus.configTimeoutMs
+  metrics.aiMaxObservedMs = aiStatus.maxObservedMs
+  metrics.aiLastDurationMs = aiStatus.lastDurationMs
+  metrics.aiTimeoutWarn = aiStatus.timeoutWarn
+  metrics.aiTimeoutExtended = aiStatus.timeoutExtended
   writeJson(metricsPath(), metrics)
   // Addition 1: persist dedup cache to disk
   failOpen(() => saveDedupCache(), "saveDedupCache")
@@ -2698,6 +2834,8 @@ function memoryClearSession(): string {
     rmSync(testHistoryPath(), { force: true })
     rmSync(metricsPath(), { force: true })
     rmSync(aiThrottlePath(), { force: true })
+    rmSync(aiMaxObservedPath(), { force: true })
+    aiClearTimeoutOverride()
     // Prune artifacts dir (session-scoped); recreate empty.
     rmSync(artifactsDir(), { recursive: true, force: true })
     ensureDir(artifactsDir())
@@ -3122,6 +3260,11 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
     }
   }
 
+  // Zastosuj timeout override z /codemem ai auto-timeout (jeśli zapisany w cache).
+  // Override = maxObservedMs * 1.3; przeżywa restarty bo zapisany w pliku.
+  const overrideMs = aiLoadTimeoutOverride()
+  if (overrideMs > 0) cfg.ai.timeoutMs = overrideMs
+
   try { writeFileSync(join(memoryDir, "cache", "options-dump.json"), JSON.stringify({ optionsRaw: options, optionsKeys: Object.keys(options ?? {}), cfgAi: cfg.ai, aiEffective: aiEffectiveConfig() }, null, 2)) } catch {}
 
   // Reset AI counters at plugin init (before session.created) — TUI czyta
@@ -3142,6 +3285,11 @@ export const ProjectContextPlugin: Plugin = async ({ project, client, $, directo
     metrics.aiBusy = false
     metrics.aiBusyLabel = ""
     metrics.aiBusySince = 0
+    metrics.aiConfigTimeoutMs = initAiCfg.timeoutMs
+    metrics.aiMaxObservedMs = aiStatus.maxObservedMs
+    metrics.aiLastDurationMs = 0
+    metrics.aiTimeoutWarn = false
+    metrics.aiTimeoutExtended = false
     failOpen(() => writeJson(metricsPath(), metrics), "flushMetrics at plugin init")
   }
 
@@ -3469,6 +3617,7 @@ async function dispatchCommand(cmd: string): Promise<string | undefined> {
   if (cmd.startsWith("/codemem init")) return memoryInit(cmd.replace(/^\/codemem init\s*/, ""))
   if (cmd.startsWith("/codemem test-history")) return memoryTestHistory()
   if (cmd.startsWith("/codemem ai status")) return aiStatusText()
+  if (cmd.startsWith("/codemem ai auto-timeout")) return aiAutoTimeoutCommand()
   if (cmd.startsWith("/codemem ai triage")) return aiTriageFailedTests()
   if (cmd.startsWith("/codemem ai")) return aiStatusText()
   if (cmd.startsWith("/codemem tui")) return memoryTuiDump()
